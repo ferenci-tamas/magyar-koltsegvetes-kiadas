@@ -1,0 +1,63 @@
+project:
+  type: book
+  output-dir: docs
+  
+execute:
+  echo: false
+  
+lang: hu-HU
+language: _language-hu.yml
+
+filters:
+  - pandoc-quotes.lua
+
+book:
+  title: "A költségvetés kiadásai: mire és mennyit költ a magyar állam?"
+  author:
+    - name:
+        given: Tamás
+        family: Ferenci
+        literal: Ferenci Tamás
+      email: tamas.ferenci@medstat.hu
+      url: https://www.medstat.hu/
+  date: today
+  date-format: "YYYY. MMMM D."
+  sharing: [twitter, facebook, linkedin]
+  favicon: favicon.svg
+  image: sharing.jpg
+  image-alt: "https://ferenci-tamas.github.io/magyar-koltsegvetes-kiadas/"
+  open-graph:
+    image: sharing.jpg
+    image-alt: "https://ferenci-tamas.github.io/magyar-koltsegvetes-kiadas/"
+    image-width: 1200
+    image-height: 630
+    locale: hu-HU
+  twitter-card:
+    image: sharing.jpg
+    image-alt: "https://ferenci-tamas.github.io/magyar-koltsegvetes-kiadas/"
+  site-url: "https://ferenci-tamas.github.io/magyar-koltsegvetes-kiadas/"
+  description: "Mennyit költ a magyar állam egészségügyre, oktatásra, nyugdíjra? Sokat? Keveset? Többet, mint régen? Ez az oldal az ilyen kérdések vizsgálatához ad segítséget."
+  chapters:
+    - index.qmd
+
+sidebar: false
+
+format:
+  html:
+    theme: cosmo
+    include-after-body:
+      text: |
+        <script type="text/javascript">
+        var sc_project=13365098; 
+        var sc_invisible=1; 
+        var sc_security="ab664f98"; 
+        </script>
+        <script type="text/javascript"
+        src="https://www.statcounter.com/counter/counter.js"
+        async></script>
+        <noscript><div class="statcounter"><a title="látogató
+        számláló" href="https://www.statcounter.hu/"
+        target="_blank"><img class="statcounter"
+        src="https://c.statcounter.com/13365098/0/ab664f98/1/"
+        alt="látogató számláló"
+        referrerPolicy="no-referrer-when-downgrade"></a></div></noscript>

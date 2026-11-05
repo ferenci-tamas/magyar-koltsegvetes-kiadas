@@ -1,0 +1,1276 @@
+```{r}
+#| results: hide
+#| message: false
+
+library(data.table)
+library(echarts4r)
+
+BridgeData <- fread("BridgeData.csv")
+CofogName <- fread("cofog-kod-nev.csv")
+
+# Categories of one classification that are the sum of categories of the other,
+# by their codes: those of COFOG (GF...) are made of Hungarian ones (F...), and
+# vice versa
+aggregates <- list(
+  GF01 = c("F01", "F15"),
+  GF0101 = c("F01.a", "F01.b", "F01.c"),
+  GF0104 = c("F01.d", "F01.e"),
+  GF04 = c("F09", "F10", "F11", "F12", "F13"),
+  F01 = c("GF0101", "GF0102", "GF0103", "GF0104", "GF0105", "GF0106"),
+  F01.f = c("GF0102", "GF0103", "GF0105", "GF0106"),
+  F03.b = c("GF0301", "GF0305", "GF0306"),
+  F04.d = c("GF0905", "GF0906", "GF0907", "GF0908")
+)
+
+# The rows to add to `data` for the aggregates made of the codes in its column
+# `from` ("huncode" or "cofog"): for each year and type, the sum of the parts,
+# coded only in the other column
+aggregate_rows <- function(data, from) {
+  to <- setdiff(c("huncode", "cofog"), from)
+  codes <- names(aggregates)[startsWith(names(aggregates), "GF") == (from == "huncode")]
+  rbindlist(lapply(codes, \(code) {
+    parts <- aggregates[[code]]
+    # A misspelt code would otherwise just be left out of the sum
+    absent <- setdiff(parts, data[[from]])
+    if (length(absent) > 0) stop(code, ": no data for ", toString(absent))
+    rows <- data[get(from) %chin% parts, .(value = sum(value)), by = .(year, type)]
+    rows[, (c(to, from, "level")) := list(
+      code, NA_character_, if (grepl("^G?F[0-9]{2}$", code)) "main_group" else "subgroup"
+    )]
+  }))
+}
+
+HunData <- readRDS(url("https://github.com/ferenci-tamas/magyar-koltsegvetes-adatbazis/raw/refs/heads/main/magyar-koltsegvetes-funkcionalis-kiadasok.rds"))
+HunData <- rbind(
+  HunData,
+  data.table(doc_year = 2016, doc_type = "Zarszamadas", row = 7, level = "subgroup",
+             huncode = "F01.e", hunname = "Műszaki fejlesztés",
+             column = c("2015. évi teljesítés", "2016. évi eredeti előirányzat",
+                        "2016. évi törvényi módosított", "2016. évi teljesítés"),
+             year = c(2015, 2016, 2016, 2016),
+             type = c("actual", "original_plan", "modified_plan", "actual"),
+             value = 0)
+)
+
+HunName <- unique(HunData[level %notin% c("total", "function"), .(hunMagyar = hunname, huncode)])
+
+HunData <- rbind(
+  HunData[doc_type == "Zarszamadas" & type == "original_plan" & year == doc_year & level %notin% c("total", "function"), .(year, type, level, huncode, value)],
+  HunData[year == 2025 & type == "original_plan" & year == doc_year & level %notin% c("total", "function"), .(year, type, level, huncode, value)],
+  HunData[year == 2026 & type == "original_plan" & year == doc_year & level %notin% c("total", "function"), .(year, type, level, huncode, value)],
+  HunData[year == 2027 & type == "original_plan" & year == doc_year & level %notin% c("total", "function"), .(year, type, level, huncode, value)],
+  HunData[doc_type == "Zarszamadas" & type == "actual" & year == doc_year & level %notin% c("total", "function"), .(year, type, level, huncode, value)]
+)
+# HunData[is.na(value)]
+HunData[is.na(value) & huncode == "F01.e", value := 0]
+
+HunData <- merge(HunData, BridgeData, by = "huncode", sort = FALSE, all.x = TRUE)
+
+HunData <- rbind(HunData, aggregate_rows(HunData, from = "huncode"))
+
+HunData <- merge(HunData, HunData[!is.na(huncode) & level == "main_group", .(total = sum(value)), .(year, type)],
+                 by = c("year", "type"), sort = FALSE)
+HunData$huncodeParent <- substring(HunData$huncode, 1, 3)
+HunData$cofogParent <- substring(HunData$cofog, 1, 4)
+
+HunData <- merge(HunData, HunData[!is.na(huncode) & level == "main_group", .(totalParent = value, year, type, huncodeParent)],
+                 by = c("year", "type", "huncodeParent"), sort = FALSE, all.x = TRUE)
+
+################################################################
+
+ESData <- data.table(eurostat::get_eurostat("gov_10a_exp", filters = list(geo = "HU"), cache = FALSE))
+saveRDS(ESData, "ESData.rds")
+ESData <- ESData[freq == "A" & unit == "MIO_NAC" & sector == "S13" & na_item == "TE" & geo == "HU" & cofog99 != "TOTAL" & !is.na(values),
+                 .(cofog = cofog99, year = lubridate::year(time), type = "actual_cofog", value = values)]
+
+ESData$level <- ifelse(nchar(ESData$cofog) == 4, "main_group", "subgroup")
+ESData <- merge(ESData, BridgeData, by = "cofog", sort = FALSE, all.x = TRUE)
+
+ESData <- rbind(ESData, aggregate_rows(ESData, from = "cofog"))
+
+ESData <- merge(ESData, ESData[!is.na(cofog) & level == "main_group", .(total = sum(value)), .(year, type)],
+                by = c("year", "type"), sort = FALSE)
+ESData$cofogParent <- substring(ESData$cofog, 1, 4)
+ESData$huncodeParent <- substring(ESData$huncode, 1, 3)
+
+ESData <- merge(ESData, ESData[!is.na(cofog) & level == "main_group", .(totalParent = value, year, type, cofogParent)],
+                by = c("year", "type", "cofogParent"), sort = FALSE, all.x = TRUE)
+
+################################################################
+
+RawData <- rbind(HunData, ESData)
+
+RawData <- merge(RawData, CofogName, by = "cofog", sort = FALSE, all.x = TRUE)
+RawData <- merge(RawData, HunName, by = "huncode", sort = FALSE, all.x = TRUE)
+
+RawData$name <- ifelse(!is.na(RawData$huncode), RawData$hunMagyar, RawData$cofogMagyar)
+RawData$hunMagyar <- NULL
+RawData$cofogMagyar <- NULL
+
+RawData$prop <- RawData$value / RawData$total
+RawData$propParent <- RawData$value / RawData$totalParent
+
+################################################################
+
+InflData <- data.table(eurostat::get_eurostat("prc_hicp_aind", filters = list(geo = "HU"), cache = FALSE))
+saveRDS(InflData, "InflData.rds")
+InflData <- InflData[freq == "A" & unit == "RCH_A_AVG" & coicop == "CP00" & geo == "HU" & !is.na(values),
+                     .(year = lubridate::year(time), inflation = 1 + values / 100)]
+InflData <- rbind(data.table(year = min(InflData$year) - 1, inflation = 1), InflData)
+if(2026 %notin% InflData$year) InflData <- rbind(InflData, data.table(year = 2026, inflation = 1.017))
+if(2027 %notin% InflData$year) InflData <- rbind(InflData, data.table(year = 2027, inflation = 1.030))
+InflData <- InflData[order(year)]
+InflData$inflation <- cumprod(InflData$inflation)
+
+GDPData <- data.table(eurostat::get_eurostat("nama_10_gdp", filters = list(geo = "HU"), cache = FALSE))
+saveRDS(GDPData, "GDPData.rds")
+DeflatorData <- GDPData[freq == "A" & unit == "PD_PCH_PRE_NAC" & na_item == "B1GQ" & geo == "HU" & !is.na(values),
+                        .(year = lubridate::year(time), deflator = 1 + values / 100)]
+DeflatorData <- rbind(data.table(year = min(DeflatorData$year) - 1, deflator = 1), DeflatorData)
+if(2026 %notin% DeflatorData$year) DeflatorData <- rbind(DeflatorData, data.table(year = 2026, deflator = 1.040))
+if(2027 %notin% DeflatorData$year) DeflatorData <- rbind(DeflatorData, data.table(year = 2027, deflator = 1.034))
+DeflatorData <- DeflatorData[order(year)]
+DeflatorData$deflator <- cumprod(DeflatorData$deflator)
+
+AuxData <- merge(InflData, DeflatorData, by = "year", sort = FALSE)
+AuxData <- merge(
+  AuxData,
+  rbind(
+    GDPData[freq == "A" & unit == "CP_MNAC" & na_item == "B1GQ" & geo == "HU" & !is.na(values),
+            .(year = lubridate::year(time), gdp = values)],
+    data.table(year = c(2026, 2027), gdp = c(92303000, 97716000))
+  ), by = "year", sort = FALSE
+)
+
+AuxData$inflation <- AuxData[year == 2025]$inflation / AuxData$inflation
+AuxData$deflator <- AuxData[year == 2025]$deflator / AuxData$deflator
+
+################################################################
+
+# RawData$date <- as.Date(paste0(RawData$year, "-01-01"))
+RawData$yearchr <- as.character(RawData$year)
+RawData$value <- RawData$value / 1000
+RawData$prop <- RawData$prop * 100
+RawData$propParent <- RawData$propParent * 100
+RawData <- merge(
+  RawData,
+  # The label of each type of data, a factor so that the charts list the types in
+  # this order
+  data.table(type = c("original_plan", "actual", "actual_cofog"),
+             typeLabel = c("Tervezet (pénzforgalmi)", "Tényleges (pénzforgalmi)",
+                           "Tényleges (eredményszemléletű)"))[
+    , typeLabel := factor(typeLabel, levels = typeLabel)])
+
+# The sum of `codes`, with each run of at least three consecutive codes written
+# as a range (e.g. GF0101–GF0106). Codes run on their final letter (F01.a,
+# F01.b) or their last two digits (F09, F10; GF0101, GF0102)
+sum_label <- function(codes) {
+  codes <- sort(codes)
+  stem <- sub("([0-9]{2}|[a-z])$", "", codes)
+  suffix <- substring(codes, nchar(stem) + 1)
+  pos <- match(suffix, letters)
+  pos[is.na(pos)] <- as.integer(suffix[is.na(pos)])
+  run <- cumsum(c(TRUE, stem[-1] != stem[-length(stem)] | !(diff(pos) %in% 1)))
+  runs <- vapply(split(codes, run), \(r) {
+    if (length(r) >= 3) paste0(r[1], "\u2013", r[length(r)]) else paste(r, collapse = " + ")
+  }, "")
+  paste(runs, collapse = " + ")
+}
+aggregate_of <- vapply(aggregates, sum_label, "")
+# A category's code in one classification or, if it's an aggregate, the sum it's
+# built from, else a dash
+code_label <- \(code, other) fcoalesce(code, unname(aggregate_of[other]), "-")
+# The aggregates whose code starts with `prefix` (GF: those of COFOG, F: the
+# Hungarian ones), written out for the text, e.g. "GF01 = F01 + F15, ..."
+written_out <- \(prefix) {
+  codes <- names(aggregates)[startsWith(names(aggregates), prefix)]
+  paste(codes, "=", vapply(aggregates[codes], paste, "", collapse = " + "), collapse = ", ")
+}
+
+RawData$nameLabel <- paste0(
+  RawData$name, " (Magyar: ", code_label(RawData$huncode, RawData$cofog),
+  ", COFOG: ", code_label(RawData$cofog, RawData$huncode), ")"
+)
+RawData$nameLabel <- factor(RawData$nameLabel,
+                            levels = unique(RawData[order(huncode, cofog)]$nameLabel))
+RawData <- merge(RawData, AuxData, by = "year", sort = FALSE)
+RawData$propgdp <- RawData$value / (RawData$gdp / 1000) * 100
+RawData <- RawData[order(year)]
+
+RawData$valuedefl <- RawData$value * RawData$deflator
+RawData$valueinfl <- RawData$value * RawData$inflation
+
+# Where each row of RawData sits in the Hungarian and in the COFOG hierarchy:
+# under its main group (huncodeParent / cofogParent), as "Összesen" if it's the main group
+# itself. Rows present in both (e.g. Egészségügy: F05 = GF07) appear in both
+CategoryPaths <- rbind(
+  RawData[, .(classification = "Magyar", node = huncode, parent = huncodeParent,
+              nameLabel, key = .I)],
+  RawData[, .(classification = "Nemzetközi (COFOG)", node = cofog,
+              parent = cofogParent, nameLabel, key = .I)]
+)[!is.na(node)]
+CategoryPaths[, `:=`(
+  main = as.character(nameLabel[node == parent][1]),
+  sub = fifelse(node == parent, "Összesen", as.character(nameLabel))
+), by = .(classification, parent)]
+# The dropdowns list the categories in this order
+setorder(CategoryPaths, classification, parent, node)
+
+# Radio buttons with the values `choices`, labelled by its names if it has any
+# (as in shiny::radioButtons). `compact = TRUE` shows the choices as a group of
+# small toggle buttons (stretched to the available width) with a small label and
+# no margin below, for placing it next to other filters; `inline` is then ignored
+radio_buttons <- function(id, label, choices, selected = choices[[1]], inline = FALSE,
+                          compact = FALSE) {
+  labels <- if (is.null(names(choices))) choices else names(choices)
+  radios <- lapply(seq_along(choices), \(i) {
+    input_id <- paste0(id, "_", i)
+    input <- htmltools::tags$input(
+      class = if (compact) "btn-check" else "form-check-input", type = "radio",
+      name = id, id = input_id, value = choices[[i]],
+      checked = if (choices[[i]] == selected) NA
+    )
+    if (compact) {
+      # Bootstrap draws the label right after a .btn-check input as its button
+      htmltools::tagList(input, htmltools::tags$label(
+        class = "btn btn-sm btn-outline-primary", `for` = input_id, labels[[i]]
+      ))
+    } else {
+      htmltools::div(
+        class = "form-check", class = if (inline) "form-check-inline", input,
+        htmltools::tags$label(class = "form-check-label", `for` = input_id, labels[[i]])
+      )
+    }
+  })
+  if (compact) radios <- htmltools::div(class = "btn-group d-flex", radios)
+  
+  htmltools::tags$fieldset(
+    id = id, class = if (!compact) "mb-3",
+    htmltools::tags$legend(
+      class = "form-label", class = if (compact) "small mb-1" else "fs-6", label
+    ),
+    radios
+  )
+}
+
+# crosstalk has no radio-button filter, so this builds one on crosstalk's JS API,
+# with the buttons of radio_buttons() (which describes `inline` and `compact`)
+filter_radio <- function(id, label, sharedData, group, selected = NULL, inline = FALSE,
+                         compact = FALSE) {
+  df <- sharedData$origData()
+  values <- if (inherits(group, "formula")) {
+    eval(group[[2]], df, environment(group))
+  } else group
+  lvls <- if (is.factor(values)) levels(droplevels(values)) else sort(unique(values))
+  lvls <- as.character(lvls)
+  if (is.null(selected)) selected <- lvls[1]
+  keys <- as.character(sharedData$key())
+  map <- setNames(lapply(lvls, \(l) keys[which(values == l)]), lvls)
+  
+  # Set the filter only after the widgets have rendered: echarts4r reacts to
+  # filter changes, but ignores a filter that was set before it existed
+  js <- sprintf(
+    "HTMLWidgets.addPostRenderHandler(function() {
+      var map = %s;
+      var handle = new crosstalk.FilterHandle(%s);
+      var inputs = document.getElementById(%s).querySelectorAll('input');
+      function update() {
+        inputs.forEach(function(el) { if (el.checked) handle.set(map[el.value]); });
+      }
+      inputs.forEach(function(el) { el.addEventListener('change', update); });
+      update();
+    });",
+    jsonlite::toJSON(map),
+    jsonlite::toJSON(sharedData$groupName(), auto_unbox = TRUE),
+    jsonlite::toJSON(id, auto_unbox = TRUE)
+  )
+  
+  htmltools::attachDependencies(
+    htmltools::tagList(
+      radio_buttons(id, label, lvls, selected, inline = inline, compact = compact),
+      htmltools::tags$script(htmltools::HTML(js))
+    ),
+    crosstalk::crosstalkLibs()
+  )
+}
+
+# crosstalk's filter_select can't depend on other filters, so this is a
+# single-choice dropdown (without an "(All)" option) that only offers the values
+# of `group` occurring in the rows that match the current choice of each parent
+# filter: the filter_radio or filter_select_dependent elements in `parent_id`,
+# with their grouping variables in `parent_group` (a list if there are several).
+# Values are offered in their order of appearance, and a choice keeps only its
+# rows within the parents' choices, so a key may occur in several rows (e.g.
+# once under each classification). `compact = TRUE` makes the dropdown and its
+# label smaller, without margin below, as in filter_radio
+filter_select_dependent <- function(id, label, sharedData, group, parent_id,
+                                    parent_group, selected = NULL, compact = FALSE) {
+  df <- sharedData$origData()
+  eval_group <- \(g) {
+    as.character(if (inherits(g, "formula")) eval(g[[2]], df, environment(g)) else g)
+  }
+  if (!is.list(parent_group)) parent_group <- list(parent_group)
+  values <- eval_group(group)
+  keys <- as.character(sharedData$key())
+  # Joined the same way as the parents' current choices in the JavaScript below
+  parents <- do.call(paste, c(lapply(parent_group, eval_group), sep = "\u001f"))
+  rows <- split(seq_along(values), parents)
+  choices <- lapply(rows, \(i) unique(values[i]))
+  map <- lapply(rows, \(i) split(keys[i], values[i]))
+  
+  js <- sprintf(
+    "HTMLWidgets.addPostRenderHandler(function() {
+      var choices = %s, map = %s, selected = %s;
+      var select = document.getElementById(%s);
+      var parents = %s.map(function(id) { return document.getElementById(id); });
+      var handle = new crosstalk.FilterHandle(%s);
+
+      function parentKey() {
+        return parents.map(function(el) {
+          return el.tagName === 'SELECT' ? el.value :
+            el.querySelector('input:checked').value;
+        }).join('\\u001f');
+      }
+
+      function update() {
+        var offered = choices[parentKey()] || [];
+        // Keep the current choice if it's still offered, else fall back to `selected`
+        var value = [select.value, selected]
+          .find(function(v) { return offered.includes(v); }) || offered[0];
+        select.replaceChildren.apply(select, offered.map(function(v) {
+          return new Option(v, v, false, v === value);
+        }));
+        // Also updates the filters that depend on this one
+        select.dispatchEvent(new Event('change'));
+      }
+
+      select.addEventListener('change', function() {
+        handle.set((map[parentKey()] || {})[select.value] || []);
+      });
+      parents.forEach(function(el) { el.addEventListener('change', update); });
+      update();
+    });",
+    jsonlite::toJSON(choices),
+    jsonlite::toJSON(map),
+    jsonlite::toJSON(selected, auto_unbox = TRUE, null = "null"),
+    jsonlite::toJSON(id, auto_unbox = TRUE),
+    jsonlite::toJSON(parent_id),
+    jsonlite::toJSON(sharedData$groupName(), auto_unbox = TRUE)
+  )
+  
+  htmltools::attachDependencies(
+    htmltools::tagList(
+      htmltools::div(
+        class = if (!compact) "mb-3",
+        htmltools::tags$label(
+          class = "form-label", class = if (compact) "small mb-1", `for` = id, label
+        ),
+        htmltools::tags$select(
+          id = id, class = "form-select", class = if (compact) "form-select-sm"
+        )
+      ),
+      htmltools::tags$script(htmltools::HTML(js))
+    ),
+    crosstalk::crosstalkLibs()
+  )
+}
+
+# filter_radio with choices that depend on other filters, the way the choices of
+# filter_select_dependent do (which describes `parent_id`, `parent_group` and how
+# the choice is kept when they change): it only offers the values of `group`
+# occurring in the rows that match the parents' current choices, in the order
+# filter_radio would offer them, and shows its buttons even if it offers a single
+# value. `inline` and `compact` are as in radio_buttons()
+filter_radio_dependent <- function(id, label, sharedData, group, parent_id,
+                                   parent_group, selected = NULL, inline = FALSE,
+                                   compact = FALSE) {
+  df <- sharedData$origData()
+  eval_group <- \(g) if (inherits(g, "formula")) eval(g[[2]], df, environment(g)) else g
+  if (!is.list(parent_group)) parent_group <- list(parent_group)
+  values <- eval_group(group)
+  lvls <- as.character(
+    if (is.factor(values)) levels(droplevels(values)) else sort(unique(values))
+  )
+  values <- as.character(values)
+  keys <- as.character(sharedData$key())
+  # Joined the same way as the parents' current choices in the JavaScript below
+  parents <- do.call(paste, c(lapply(parent_group, \(g) as.character(eval_group(g))),
+                              sep = "\u001f"))
+  rows <- split(seq_along(values), parents)
+  fieldsets <- lapply(rows, \(i) {
+    offered <- intersect(lvls, values[i])
+    radio_buttons(id, label, offered,
+                  selected = if (isTRUE(selected %in% offered)) selected else offered[[1]],
+                  inline = inline, compact = compact)
+  })
+  map <- lapply(rows, \(i) split(keys[i], values[i]))
+  
+  js <- sprintf(
+    "HTMLWidgets.addPostRenderHandler(function() {
+      var contents = %s, map = %s, selected = %s;
+      var fieldset = document.getElementById(%s);
+      var parents = %s.map(function(id) { return document.getElementById(id); });
+      var handle = new crosstalk.FilterHandle(%s);
+
+      function parentKey() {
+        return parents.map(function(el) {
+          return el.tagName === 'SELECT' ? el.value :
+            el.querySelector('input:checked').value;
+        }).join('\\u001f');
+      }
+
+      function value() {
+        var checked = fieldset.querySelector('input:checked');
+        return checked && checked.value;
+      }
+
+      function update() {
+        var current = value();
+        fieldset.innerHTML = contents[parentKey()] || '';
+        var inputs = Array.from(fieldset.querySelectorAll('input'));
+        var offered = inputs.map(function(el) { return el.value; });
+        // Keep the current choice if it's still offered, else fall back to `selected`
+        var choice = [current, selected]
+          .find(function(v) { return offered.includes(v); }) || offered[0];
+        inputs.forEach(function(el) { el.checked = el.value === choice; });
+        // Also updates the filters that depend on this one
+        fieldset.dispatchEvent(new Event('change'));
+      }
+
+      fieldset.addEventListener('change', function() {
+        handle.set((map[parentKey()] || {})[value()] || []);
+      });
+      parents.forEach(function(el) { el.addEventListener('change', update); });
+      update();
+    });",
+    # What goes inside the fieldset (the legend and the buttons) for each choice of
+    # the parents
+    jsonlite::toJSON(lapply(fieldsets, \(f) as.character(htmltools::tagList(f$children))),
+                     auto_unbox = TRUE),
+    jsonlite::toJSON(map),
+    jsonlite::toJSON(selected, auto_unbox = TRUE, null = "null"),
+    jsonlite::toJSON(id, auto_unbox = TRUE),
+    jsonlite::toJSON(parent_id),
+    jsonlite::toJSON(sharedData$groupName(), auto_unbox = TRUE)
+  )
+  
+  htmltools::attachDependencies(
+    htmltools::tagList(
+      # The buttons for the parents' first combination of values, until the
+      # JavaScript reads their current choices
+      fieldsets[[1]],
+      htmltools::tags$script(htmltools::HTML(js))
+    ),
+    crosstalk::crosstalkLibs()
+  )
+}
+
+# Adds buttons to the toolbox of `chart`, after the ones already there, that
+# download the data it plots, as shown, in a CSV or an Excel file: a column of the
+# x values, then the plotted column of each series left by the filters and the
+# legend, headed by its name and `unit`. The file is named after the title of the
+# chart and, if the plotted column is chosen with the radio buttons `choice_id`,
+# the chosen one, and so is the PNG of the toolbox's saveAsImage button, if it has
+# one. The Excel file is put together here (as a zip of a few XML files), so that
+# the page needs no library for it
+add_data_download <- function(chart, unit, choice_id = NULL) {
+  htmlwidgets::onRender(chart, r"-(
+                        function(el, x, data) {
+                        var chart = echarts.getInstanceByDom(el);
+                        
+                        // The rows of the table, the header first, with the x values in their order
+                        // on the axis, and an empty cell (undefined) where a series has no value
+                        function table() {
+                        var model = chart.getModel(), axis = model.getComponent('xAxis');
+                        var header = [axis.get('name')], rows = {};
+                        // Skips the series hidden with the legend; those filtered out have no data
+                        model.eachSeries(function(series) {
+                        var points = series.getData(), y = points.mapDimension('y'), shown = false;
+                        for (var i = 0; i < points.count(); i++) {
+                        var name = points.getName(i), value = points.get(y, i);
+                        if (isNaN(value)) continue;
+                        // A year as a number, so that Excel takes it for one
+                        rows[name] = rows[name] || [isNaN(name) ? name : Number(name)];
+                        rows[name][header.length] = value;
+                        shown = true;
+                        }
+                        if (shown) header.push(series.name + ' [' + data.unit + ']');
+                        });
+                        var order = axis.get('data');
+                        return [header].concat(Object.keys(rows)
+                        .sort(function(a, b) { return order.indexOf(a) - order.indexOf(b); })
+                        .map(function(name) {
+                        return header.map(function(_, j) { return rows[name][j]; });
+                        }));
+                        }
+                        
+                        // With 15 significant digits, as R writes numbers, which drops the noise of
+                        // floating-point arithmetic (as in 0.30000000000000004)
+                        function number(value) {
+                        return String(Number(value.toPrecision(15)));
+                        }
+                        
+                        function csv(rows) {
+                        var text = rows.map(function(row) {
+                        return row.map(function(cell) {
+                        if (cell === undefined) return '';
+                        if (typeof cell === 'number') return number(cell);
+                        return /[",\r\n]/.test(cell) ? '"' + cell.replace(/"/g, '""') + '"' : cell;
+                        }).join(',');
+                        }).join('\r\n');
+                        // The byte order mark tells Excel that the file is in UTF-8
+                        return new Blob(['\ufeff' + text + '\r\n'], { type: 'text/csv;charset=utf-8' });
+                        }
+                        
+                        function xlsx(rows) {
+                        // The name of the j-th column (from 0): A to Z, then AA, AB...
+                        function column(j) {
+                        return (j >= 26 ? column(Math.floor(j / 26) - 1) : '') +
+                        String.fromCharCode(65 + j % 26);
+                        }
+                        var sheetData = rows.map(function(row, i) {
+                        return '<row r="' + (i + 1) + '">' + row.map(function(cell, j) {
+                        var ref = ' r="' + column(j) + (i + 1) + '"';
+                        if (cell === undefined) return '';
+                        if (typeof cell === 'number') return '<c' + ref + '><v>' + number(cell) + '</v></c>';
+                        cell = cell.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                        return '<c' + ref + ' t="inlineStr"><is><t>' + cell + '</t></is></c>';
+                        }).join('') + '</row>';
+                        }).join('');
+                        // Each column wide enough for its header, within limits
+                        var cols = rows[0].map(function(name, j) {
+                        return '<col min="' + (j + 1) + '" max="' + (j + 1) + '" width="' +
+                        Math.min(Math.max(name.length + 2, 10), 50) + '" customWidth="1"/>';
+                        }).join('');
+                        var ns = 'http://schemas.openxmlformats.org/';
+                        var type = 'application/vnd.openxmlformats-';
+                        return zip({
+                        '[Content_Types].xml':
+                        '<Types xmlns="' + ns + 'package/2006/content-types">' +
+                        '<Default Extension="rels" ContentType="' + type + 'package.relationships+xml"/>' +
+                        '<Default Extension="xml" ContentType="application/xml"/>' +
+                        '<Override PartName="/xl/workbook.xml" ContentType="' + type +
+                        'officedocument.spreadsheetml.sheet.main+xml"/>' +
+                        '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="' + type +
+                        'officedocument.spreadsheetml.worksheet+xml"/></Types>',
+                        '_rels/.rels':
+                        '<Relationships xmlns="' + ns + 'package/2006/relationships">' +
+                        '<Relationship Id="rId1" Target="xl/workbook.xml" Type="' + ns +
+                        'officeDocument/2006/relationships/officeDocument"/></Relationships>',
+                        'xl/workbook.xml':
+                        '<workbook xmlns="' + ns + 'spreadsheetml/2006/main" xmlns:r="' + ns +
+                        'officeDocument/2006/relationships"><sheets>' +
+                        '<sheet name="Adatok" sheetId="1" r:id="rId1"/></sheets></workbook>',
+                        'xl/_rels/workbook.xml.rels':
+                        '<Relationships xmlns="' + ns + 'package/2006/relationships">' +
+                        '<Relationship Id="rId1" Target="worksheets/sheet1.xml" Type="' + ns +
+                        'officeDocument/2006/relationships/worksheet"/></Relationships>',
+                        'xl/worksheets/sheet1.xml':
+                        '<worksheet xmlns="' + ns + 'spreadsheetml/2006/main"><cols>' + cols +
+                        '</cols><sheetData>' + sheetData + '</sheetData></worksheet>'
+                        }, type + 'officedocument.spreadsheetml.sheet');
+                        }
+                        
+                        // A zip archive of the XML documents `files` (their contents by name), as a
+                        // Blob of the MIME type `type`, with the files stored uncompressed
+                        function zip(files, type) {
+                        var crcTable = Array.from({ length: 256 }, function(_, c) {
+                        for (var k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+                        return c;
+                        });
+                        // The integers `values`, little-endian, each of the size in bytes in `sizes`
+                        function bytes(values, sizes) {
+                        var view = new DataView(new ArrayBuffer(sizes.reduce(function(a, b) { return a + b; })));
+                        values.reduce(function(at, value, i) {
+                        view[sizes[i] === 2 ? 'setUint16' : 'setUint32'](at, value, true);
+                        return at + sizes[i];
+                        }, 0);
+                        return new Uint8Array(view.buffer);
+                        }
+                        var encoder = new TextEncoder(), local = [], central = [], offset = 0;
+                        Object.keys(files).forEach(function(name) {
+                        var path = encoder.encode(name);
+                        var content = encoder.encode(
+                        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + files[name]
+                        );
+                        var crc = ~content.reduce(function(c, byte) {
+                        return crcTable[(c ^ byte) & 255] ^ (c >>> 8);
+                        }, -1) >>> 0;
+                        // The fields that both headers of the file have, from the version needed
+                        // to extract it (2.0): no flags, no compression, modified on 1980-01-01 at
+                        // 0:00, the CRC-32 and the sizes, the length of the name and of the extra
+                        // field
+                        var common = [20, 0, 0, 0, 33, crc, content.length, content.length, path.length, 0];
+                        var sizes = [2, 2, 2, 2, 2, 4, 4, 4, 2, 2];
+                        local.push(bytes([0x04034b50].concat(common), [4].concat(sizes)), path, content);
+                        // Also with the version that made it and where its local header is
+                        central.push(bytes([0x02014b50, 20].concat(common, [0, 0, 0, 0, offset]),
+                        [4, 2].concat(sizes, [2, 2, 2, 4, 4])), path);
+                        offset += 30 + path.length + content.length;
+                        });
+                        var size = central.reduce(function(total, part) { return total + part.length; }, 0);
+                        var count = Object.keys(files).length;
+                        var end = bytes([0x06054b50, 0, 0, count, count, size, offset, 0],
+                        [4, 2, 2, 2, 2, 4, 4, 2]);
+                        return new Blob(local.concat(central, [end]), { type: type });
+                        }
+                        
+                        // The title of the chart and, if the plotted column is chosen with radio
+                        // buttons, the chosen one (the first one if the buttons are hidden), without
+                        // the characters that Windows doesn't allow in file names
+                        function fileName() {
+                        var parts = [];
+                        chart.getModel().eachComponent('title', function(title) {
+                        parts.push(title.get('text'));
+                        });
+                        var choice = data.choiceId && document.getElementById(data.choiceId);
+                        if (choice) {
+                        var input = choice.parentElement.hidden ? choice.querySelector('input') :
+                        choice.querySelector('input:checked');
+                        parts.push(choice.querySelector('label[for="' + input.id + '"]').textContent);
+                        }
+                        return (parts.filter(Boolean).join(', ') || 'adatok')
+                        .replace(/\n/g, ' ').replace(/: /g, ' - ').replace(/[\\/:*?"<>|]/g, '-');
+                        }
+                        
+                        function save(blob, extension) {
+                        var link = document.createElement('a');
+                        link.href = URL.createObjectURL(blob);
+                        link.download = fileName() + '.' + extension;
+                        document.body.appendChild(link);
+                        link.click();
+                        link.remove();
+                        // Once the download has surely started
+                        setTimeout(function() { URL.revokeObjectURL(link.href); }, 60000);
+                        }
+                        
+                        // Added here, not in R, as ECharts takes the onclick of a button of its own
+                        // only when the button is created
+                        chart.setOption({
+                        toolbox: {
+                        feature: {
+                        // A page of text
+                        myDataCsv: {
+                        show: true,
+                        title: 'Adatok letöltése (CSV)',
+                        icon: 'path://M11.5,2v56H51V14.8L38.4,2H11.5z M38.4,2.2v12.7H51 M19,27H43 M19,37H43 M19,47H43',
+                        onclick: function() { save(csv(table()), 'csv'); }
+                        },
+                        // A spreadsheet
+                        myDataXlsx: {
+                        show: true,
+                        title: 'Adatok letöltése (XLSX)',
+                        icon: 'path://M4,8H54V52H4Z M4,22.7H54 M4,37.3H54 M21,8V52 M37.5,8V52',
+                        onclick: function() { save(xlsx(table()), 'xlsx'); }
+                        }
+                        }
+                        }
+                        });
+                        
+                        // The saveAsImage button names its PNG at the click, after its own option,
+                        // so the name is updated whenever the chart has been redrawn. (A moment
+                        // later, as ECharts may say it has finished from within a setOption, and
+                        // then ignores another one)
+                        if (chart.getModel().getComponent('toolbox').get(['feature', 'saveAsImage'])) {
+                        var pngName;
+                        chart.on('finished', function() {
+                        var name = fileName();
+                        if (name === pngName) return;
+                        pngName = name;
+                        setTimeout(function() {
+                        chart.setOption({ toolbox: { feature: { saveAsImage: { name: name } } } });
+                        });
+                        });
+                        }
+                        }
+  )-", data = list(unit = unit, choiceId = choice_id))
+}
+
+# The filters and the chart of the column `var` of RawData in "Eredmények", with
+# `axis_name` on the y axis and `unit` after the values in the tooltip. The chart
+# has no title if `title` is NULL, else `title` followed by the name of the chosen
+# main group and, unless it's "Összesen", of the subgroup. If `var` has several
+# columns, the chart plots the one chosen with radio buttons labelled `var_label`,
+# which offer them by their names (the first one by default), and `axis_name` may
+# give a different name for each. With `stack = TRUE`, the chart instead shows what
+# the chosen main group is made of, as the stacked areas of its subgroups (or, for
+# "Összesen", of the main groups), for the type of data chosen with radio buttons
+# in place of the subgroup dropdown, which only offer the types of data that come
+# in the chosen classification. The title then names the main group (unless it's
+# "Összesen") and the type, and the tooltip only shows the hovered area. The radio
+# buttons for `var` only appear when a main group is chosen, as the columns after
+# the first may be relative to it (like propParent): for "Összesen", the chart
+# plots the first column. Each call has its own crosstalk group and element ids
+# (made from `id`), so its controls only affect its own chart
+category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
+                           stack = FALSE, id = paste0(var[[1]], if (stack) "_stack")) {
+  axis_name <- rep_len(axis_name, length(var))
+  group <- paste0("category_", id)
+  filter_ids <- paste0(id, c("_classification_filter", "_main_group_filter",
+                             "_subgroup_filter", "_type_filter"))
+  var_id <- paste0(id, "_var_choice")
+  
+  # The filters pick the plotted rows by their keys, as the two share a crosstalk
+  # group. The chart only gets the columns it plots, since echarts4r embeds every
+  # column in the page
+  if (stack) {
+    # A row of RawData in both classifications (e.g. Egészségügy) is a part of a
+    # different whole in each, so here a key is a row of CategoryPaths, i.e. a row
+    # of RawData in one classification. The main group dropdown picks the whole: a
+    # main group, made up of its subgroups, or "Összesen", made up of the main
+    # groups. Each type of data only appears in the classification it comes in
+    # (the budget's cash-based data in the Hungarian one, Eurostat's accrual-based
+    # data in COFOG), as only there do the parts add up to the whole: the
+    # categories mapped from the other classification leave gaps
+    native <- c(original_plan = "Magyar", actual = "Magyar",
+                actual_cofog = "Nemzetközi (COFOG)")
+    paths <- CategoryPaths[classification == native[RawData$type[key]], .(
+      classification, main = fifelse(sub == "Összesen", "Összesen", main),
+      typeLabel = RawData$typeLabel[key], nameLabel, row = key, key = .I
+    )]
+    # A series for each part in each classification, stacked in the order of the
+    # codes. Named by its number, as echarts4r writes the name into every row
+    paths[, series := paste(classification, nameLabel)]
+    paths[, series := factor(series, levels = unique(series),
+                             labels = seq_along(unique(series)))]
+    shared_paths <- crosstalk::SharedData$new(
+      # "Összesen" first in the dropdown
+      paths[order(main != "Összesen")], key = ~key, group = group
+    )
+    # In the order of the years, as echarts4r puts them on the x axis in the order
+    # they first appear in
+    chart_data <- RawData[paths$row, c("yearchr", var), with = FALSE][
+      , `:=`(series = paths$series, key = paths$key)][order(yearchr)]
+    shared_data <- crosstalk::SharedData$new(
+      chart_data[, !"key"] |> dplyr::group_by(series),
+      key = as.character(chart_data$key), group = group
+    )
+  } else {
+    # A key is the row number in RawData (the default key of shared_data)
+    shared_paths <- crosstalk::SharedData$new(CategoryPaths, key = ~key, group = group)
+    shared_data <- crosstalk::SharedData$new(
+      RawData[, c("typeLabel", "yearchr", var), with = FALSE] |>
+        dplyr::group_by(typeLabel),
+      group = group
+    )
+  }
+  
+  # The filters share a row on wide screens, but the dropdowns are at least 20rem
+  # wide, so on narrower screens they wrap onto rows of their own. (A Bootstrap
+  # .row would overflow, as Quarto sets overflow-x: auto on the cell output)
+  filters <- htmltools::div(
+    class = "d-flex flex-wrap align-items-end row-gap-2 mb-3",
+    # Not Bootstrap's column-gap-3: Quarto mistakes any class starting with
+    # "column-" for a layout class like column-page, and turns the section into a
+    # grid that confines its content to the narrower body column
+    style = "column-gap: 1rem",
+    htmltools::div(
+      # Full width on phones, where it's alone in its row
+      class = "flex-grow-1 flex-md-grow-0",
+      filter_radio(
+        id = filter_ids[1],
+        label = "Osztályozás:",
+        sharedData = shared_paths,
+        group = ~classification,
+        selected = "Magyar",
+        compact = TRUE
+      )
+    ),
+    if (stack) htmltools::div(
+      class = "flex-grow-1 flex-md-grow-0",
+      # Before the main group dropdown, so that when the classification changes,
+      # this is updated first, and the dropdown never looks for the main groups of
+      # a type that the new classification doesn't have (which would lose its
+      # choice)
+      filter_radio_dependent(
+        id = filter_ids[4],
+        label = "Adat:",
+        sharedData = shared_paths,
+        group = ~typeLabel,
+        parent_id = filter_ids[1],
+        parent_group = ~classification,
+        selected = "Tervezet (pénzforgalmi)",
+        compact = TRUE
+      )
+    ),
+    htmltools::div(
+      style = "flex: 1 1 20rem",
+      filter_select_dependent(
+        id = filter_ids[2],
+        label = "Főcsoport:",
+        sharedData = shared_paths,
+        group = ~main,
+        # In stack mode, only the main groups with subgroups of the chosen type
+        parent_id = filter_ids[if (stack) c(1, 4) else 1],
+        parent_group = if (stack) list(~classification, ~typeLabel) else ~classification,
+        selected = if (stack) "Összesen" else "Egészségügy (Magyar: F05, COFOG: GF07)",
+        compact = TRUE
+      )
+    ),
+    if (!stack) htmltools::div(
+      style = "flex: 1 1 20rem",
+      filter_select_dependent(
+        id = filter_ids[3],
+        label = "Csoport:",
+        sharedData = shared_paths,
+        group = ~sub,
+        parent_id = filter_ids[1:2],
+        parent_group = list(~classification, ~main),
+        selected = "Összesen",
+        compact = TRUE
+      )
+    ),
+    if (length(var) > 1) htmltools::div(
+      class = "flex-grow-1 flex-md-grow-0",
+      # In stack mode, until a main group is chosen (see below)
+      hidden = if (stack) NA,
+      radio_buttons(id = var_id, label = var_label, choices = var, compact = TRUE)
+    )
+  )
+  
+  chart <- shared_data |>
+    # Hovering the legend highlights nothing if the chart had more than
+    # hoverLayerThreshold (by default 3000) elements when last redrawn, as it has
+    # here: the points of all categories, drawn before filtering, are still
+    # fading out
+    e_chart(yearchr, hoverLayerThreshold = 1e6)
+  chart <- if (stack) {
+    # triggerLineEvent: hovering an area, not only its points, tells which one it
+    # is, for the tooltip
+    e_area_(chart, var[[1]], stack = "total", emphasis = list(focus = "series"),
+            triggerLineEvent = TRUE)
+  } else {
+    e_line_(chart, var[[1]], emphasis = list(focus = "series"))
+  }
+  # After the values, in the tooltip and in the description for screen readers: a
+  # space before the unit, but not before a percent sign
+  unit_suffix <- if (unit == "%") unit else paste0(" ", unit)
+  chart <- chart |>
+    e_tooltip(trigger = "axis",
+              formatter = htmlwidgets::JS(sprintf("
+                function(params) {
+                  return params[0].name + '<br>' +
+                    params.map(function(p) {
+                      // With crosstalk, p.value is the whole data row as an object,
+                      // not [x, y], so this reads the plotted column from it
+                      var column = p.dimensionNames[p.encode.y[0]];
+                      // One decimal, or two significant digits if that's more
+                      // precise (below 1), so that small values aren't rounded to 0
+                      var value = Number(p.value[column]).toLocaleString('hu-HU', {
+                        maximumFractionDigits: 1, maximumSignificantDigits: 2,
+                        roundingPriority: 'morePrecision'
+                      });
+
+                      return p.marker + ' ' + p.seriesName +
+                        ': <b>' + value + '%s</b>';
+                    }).join('<br>');
+                }", unit_suffix))) |>
+    e_title(subtext = "Ferenci Tamás (medstat.hu)", bottom = 0, right = 10,
+            sublink = "https://www.medstat.hu/", subtarget = "blank") |>
+    e_x_axis(name = "Év") |>
+    e_y_axis(name = axis_name[[1]],
+             axisLabel = list(
+               # toLocaleString keeps only 3 decimals by default, too few for the
+               # ticks of the smallest categories
+               formatter = htmlwidgets::JS("
+                function(value) {
+                  return value.toLocaleString('hu-HU', { maximumFractionDigits: 20 });
+                }
+              ")
+             )) |>
+    e_toolbox() |>
+    e_toolbox_feature(
+      feature = "saveAsImage",
+      title = "Mentés képként (PNG)",
+      option = list(
+        type = "png",
+        pixelRatio = 2
+      )) |>
+    add_data_download(unit, choice_id = if (length(var) > 1) var_id)
+  
+  # For screen readers, the chart is an image, described by its title, its axes and
+  # the values shown, formatted as in the tooltip. (ECharts' own description, with
+  # e_aria(), would be in English and list every column of the data, for every
+  # series, even the ones filtered out)
+  chart <- chart |>
+    htmlwidgets::onRender("
+      function(el, x, data) {
+        var chart = echarts.getInstanceByDom(el);
+        var format = new Intl.NumberFormat('hu-HU', {
+          maximumFractionDigits: 1, maximumSignificantDigits: 2,
+          roundingPriority: 'morePrecision'
+        });
+        el.setAttribute('role', 'img');
+
+        // After every redraw, so whenever the filters, the plotted column, the
+        // title or the legend change
+        chart.on('finished', function() {
+          var model = chart.getModel(), parts = [];
+          model.eachComponent('title', function(title) { parts.push(title.get('text')); });
+          parts.push(data.type,
+                     'Vízszintes tengely: ' + model.getComponent('xAxis').get('name'),
+                     'Függőleges tengely: ' + model.getComponent('yAxis').get('name'));
+          // Skips the series hidden with the legend; those filtered out have no data
+          model.eachSeries(function(series) {
+            var points = series.getData(), y = points.mapDimension('y'), values = [];
+            for (var i = 0; i < points.count(); i++) {
+              var value = points.get(y, i);
+              if (!isNaN(value)) {
+                values.push(points.getName(i) + ': ' + format.format(value) + data.unit);
+              }
+            }
+            if (values.length) parts.push(series.name + ': ' + values.join('; '));
+          });
+          var label = parts.filter(Boolean).join('. ').replace(/\\n/g, ' ') + '.';
+          // The chart is also redrawn on hover
+          if (label !== el.getAttribute('aria-label')) el.setAttribute('aria-label', label);
+        });
+      }
+    ", data = list(type = if (stack) "Halmozott területdiagram" else "Vonaldiagram",
+                   unit = unit_suffix))
+  
+  if (length(var) > 1) {
+    # Plots the chosen column, with its axis name. Also run at the start, in case
+    # the browser restored an earlier choice when reloading the page. In stack
+    # mode, the buttons are hidden, and the first column plotted, while the main
+    # group dropdown is at "Összesen" (or still empty, before it's filled)
+    chart <- chart |>
+      htmlwidgets::onRender("
+        function(el, x, data) {
+          var chart = echarts.getInstanceByDom(el);
+          var choice = document.getElementById(data.id);
+          var main = data.mainId && document.getElementById(data.mainId);
+
+          function update() {
+            var whole = !!main && (!main.value || main.value === 'Összesen');
+            // The div around the buttons, so that they leave no gap in the row
+            choice.parentElement.hidden = whole;
+            var column = whole ? choice.querySelector('input').value :
+              choice.querySelector('input:checked').value;
+            chart.setOption({
+              series: chart.getOption().series.map(function() {
+                return { encode: { y: column } };
+              }),
+              yAxis: { name: data.axisNames[column] }
+            });
+          }
+
+          choice.addEventListener('change', update);
+          if (main) main.addEventListener('change', update);
+          update();
+        }
+      ", data = c(list(id = var_id, axisNames = as.list(setNames(axis_name, var))),
+                  if (stack) list(mainId = filter_ids[2])))
+  }
+  
+  if (stack) {
+    # echarts4r names each series after its group, but it should show the label
+    # of its category (which has a series in each classification it's in)
+    ids <- vapply(chart$x$opts$series, \(s) s$name, "")
+    labels <- as.character(paths$nameLabel[match(ids, paths$series)])
+    chart$x$opts$series <- Map(\(s, label) modifyList(s, list(name = label)),
+                               chart$x$opts$series, labels)
+    chart$x$opts$legend$data <- as.list(unique(labels))
+    
+    if (unit == "%") {
+      # Shares of a whole stack up to 100% at most, but rounding errors can put the
+      # top of the stack a hair above it, and then ECharts would run the axis to
+      # 120. (When the top stays at or below 100, so does ECharts' own maximum)
+      chart <- e_y_axis(chart, max = htmlwidgets::JS(
+        "function(value) { return value.max > 100 ? 100 : null; }"
+      ))
+    }
+    
+    chart <- chart |>
+      e_legend(type = "scroll") |>
+      # ECharts' default palette has 9 colours, so this adds 7 for the 16 Hungarian
+      # main groups, each picked (among colours of moderate lightness and chroma)
+      # to differ as much as possible from all the colours before it, by CIEDE2000
+      e_color(c("#5070dd", "#b6d634", "#505372", "#ff994d", "#0ca8df", "#ffd10a",
+                "#fb628b", "#785db0", "#3fbe95", "#666018", "#a04024", "#c3b0e4",
+                "#ab2965", "#167a4e", "#ae9d69", "#027588")) |>
+      htmlwidgets::onRender("
+        function(el, x, data) {
+          var chart = echarts.getInstanceByDom(el);
+          var option = chart.getOption();
+          var names = option.series.map(function(s) { return s.name; });
+          var palette = option.color, years = option.xAxis[0].data;
+          var seriesOf = {};
+          data.series.forEach(function(id, i) { seriesOf[id] = i; });
+
+          // The chart has a series for every part of every whole, so when the
+          // filters change, this shows only the series left in the legend,
+          // coloured as if they were the only ones, and only the years from their
+          // first to their last
+          new crosstalk.FilterHandle(data.group).on('change', function(e) {
+            var keys = e.value && new Set(e.value.map(String));
+            var shown = [], hasYear = {};
+            option.dataset[0].source.forEach(function(row) {
+              if (keys && !keys.has(String(row.XkeyX))) return;
+              shown[seriesOf[row.series]] = true;
+              hasYear[row.yearchr] = true;
+            });
+            var legend = names.filter(function(name, i) { return shown[i]; });
+            var covered = years.filter(function(year) { return hasYear[year]; });
+            var color = {};
+            legend.forEach(function(name, i) {
+              color[name] = palette[i % palette.length];
+            });
+            chart.setOption({
+              legend: { data: legend },
+              xAxis: {
+                data: years.slice(years.indexOf(covered[0]),
+                                  years.indexOf(covered[covered.length - 1]) + 1)
+              },
+              // Also the series of the same category in the other
+              // classification, as the legend takes the colour of the first
+              // series of a name
+              series: names.map(function(name) {
+                return color[name] ? { color: color[name] } : {};
+              })
+            });
+          });
+
+          // The formatter of e_tooltip() only gets the hovered area
+          var format = option.tooltip[0].formatter, hovered = null;
+          chart.setOption({
+            tooltip: {
+              formatter: function(params) {
+                params = params.filter(function(p) { return p.seriesIndex === hovered; });
+                return params.length ? format(params) : '';
+              }
+            }
+          });
+
+          chart.on('mouseover', 'series', function(p) {
+            hovered = p.seriesIndex;
+            // The tooltip was already drawn for this mouse move, so redraw it
+            chart.dispatchAction({
+              type: 'showTip', x: p.event.offsetX, y: p.event.offsetY
+            });
+          });
+
+          chart.on('mouseout', 'series', function() {
+            hovered = null;
+          });
+        }
+      ", data = list(group = group, series = as.list(ids)))
+  }
+  
+  if (!is.null(title)) {
+    # The end of the title for each choice of the main group dropdown and of the
+    # subgroup dropdown or, in stack mode, of the type
+    name_of <- \(label) RawData$name[match(label, RawData$nameLabel)]
+    ends <- if (stack) {
+      unique(paths[, .(main, second = as.character(typeLabel))])[, end := fifelse(
+        main == "Összesen", second, paste0(name_of(main), ", ", second)
+      )]
+    } else {
+      unique(CategoryPaths[, .(main, second = sub)])[, end := fifelse(
+        second == "Összesen", name_of(main),
+        paste0(name_of(main), ", ", name_of(second))
+      )]
+    }
+    
+    chart <- chart |>
+      htmlwidgets::onRender("
+        function(el, x, data) {
+          var chart = echarts.getInstanceByDom(el);
+          var main = document.getElementById(data.mainId);
+          // The subgroup dropdown or, in stack mode, the radio buttons of the type
+          var second = document.getElementById(data.secondId);
+          // The height of the chart and the room above the plot without the title
+          var option = chart.getOption();
+          var height = el.clientHeight, gridTop = option.grid[0].top;
+          var context = document.createElement('canvas').getContext('2d');
+
+          // ECharts could wrap the title too, but wouldn't tell into how many
+          // lines, which decides how much room the title needs
+          function wrap(text, width) {
+            return text.split(' ').reduce(function(lines, word) {
+              var last = lines[lines.length - 1];
+              if (last && context.measureText(last + ' ' + word).width <= width) {
+                lines[lines.length - 1] = last + ' ' + word;
+              } else {
+                lines.push(word);
+              }
+              return lines;
+            }, []);
+          }
+
+          function update() {
+            var end = (data.ends[main.value] || {})[second.tagName === 'SELECT' ?
+              second.value : second.querySelector('input:checked').value];
+            // The dropdowns aren't filled yet
+            if (end === undefined) return;
+            // Smaller on phones, where the title takes several lines anyway
+            var fontSize = el.clientWidth < 500 ? 14 : 18, lineHeight = fontSize + 6;
+            context.font = 'bold ' + fontSize + 'px ' + option.textStyle.fontFamily;
+            // Clear of the toolbox (three buttons) in the top right corner
+            var lines = wrap(data.title + ': ' + end, el.clientWidth - 120);
+            chart.setOption({
+              title: {
+                id: 'category', text: lines.join('\\n'), left: 10, top: 5,
+                textStyle: { fontSize: fontSize, fontWeight: 'bold', lineHeight: lineHeight }
+              },
+              grid: { top: gridTop + lines.length * lineHeight }
+            });
+            // The chart grows by the title, so that the plot keeps its size. (The
+            // size is given explicitly, as ECharts would otherwise keep using the
+            // one htmlwidgets last gave it when the window was resized)
+            el.style.height = height + lines.length * lineHeight + 'px';
+            chart.resize({ width: el.clientWidth, height: el.clientHeight });
+          }
+
+          main.addEventListener('change', update);
+          second.addEventListener('change', update);
+          window.addEventListener('resize', update);
+        }
+      ", data = list(
+        title = title, mainId = filter_ids[2],
+        secondId = filter_ids[if (stack) 4 else 3],
+        ends = lapply(split(setNames(ends$end, ends$second), ends$main), as.list)
+      ))
+  }
+  
+  htmltools::tagList(filters, chart)
+}
+```
+
+# Bevezetés
+
+Az ország mindenkori költségvetésének összeállítása nagyon egyszerű feladat, ugyanis mindössze két eleme szokta vita tárgyát képezni: a bevételei és a kiadásai. Jelen weboldal ez utóbbival foglalkozik.
+
+A költségvetés kiadásai az állampolgárok oldaláról nézve juttatásokat, állam által ellátott funkciókat, állam által biztosított szolgáltatásokat jelentenek, így ilyenből a többség általában többet lát kívánatosnak. Nincs értelme azt a kérdést feltenni, hogy "Ön több pénzt adna-e az egészségügynek?", mert erre kivétel nélkül mindenki azt fogja válaszolni, hogy igen, persze, naná. A probléma ott kezdődik, hogy pontosan ugyanezt válaszolnák arra a kérdésre, hogy több pénzt adna-e az oktatásra, hogy többet szánna-e a nyugdíjakra, hogy jobban támogatná-e a gazdákat, hogy több jusson-e a közlekedés fejlesztésére...
+
+Tehát a célszerű kérdés, amit fel kell tenni, szerintem így hangzik: van 100 pengőnk, amit elkölthetünk, kérjük, *ossza szét* a különböző funkciók között! Mennyit adna az egészségügynek? Mennyit az oktatásra? Mennyit a nyugdíjakra? Mennyit a gazdák támogatására? Mennyit a közlekedés fejlesztésére? Bármennyire is bugyután hangzik a dolog, szerintem már ez hatalmas előrelépés az előbbi típusú kérdésekhez képest, mert *rákényszeríti* a válaszadót, hogy szembesüljön azzal, hogy ha valakinek többet ad, akkor másnak *muszáj* kevesebbet. Ez azért is jó, mert elejét veszi azoknak a válaszoknak, hogy "nem kéne lopni!!" -- persze, tényleg nem kéne, de ha ezt megszüntetjük, és ettől több pénzt oszthatunk is el (most tegyük félre azt a kérdést, hogy ez megvalósítható-e ilyen egyszerűen), *attól még* igaz marad az, hogy ha valahol többet költünk, akkor máshol muszáj kevesebbet. Ezért kell azt kérdezni, hogy milyen *arányban* adna az egészségügynek; legyen most ez a konkrét példa.
+
+A másik, szorosan idekapcsolódó probléma, amikor nem ahhoz viszonyítják az elköltött pénzt, mint ami kívánatos lenne, hanem a múltbeli értékekhez: több pénzt szán a kormány az egészségügyre, mint 1/5/10/20/stb. évvel ezelőtt? (Ez különösen akkor szokott élesen felmerülni, ha 1/5/10/20/stb. évvel ezelőtt még egy másik kormány volt.) A probléma az, hogy ennek a kérdésnek semmi értelme nincsen ebben a formában, kezdve azzal, hogy a 20 évvel ezelőtti forint nem ugyanaz, mint a mai forint (2005-ben 173 forint volt egy kilogramm fehér kenyér), tehát bár *látszólag* mindkettő forintban van mérve, ez valójában két *különböző* mértékegység... olyan, mintha azt kérdeznék, hogy több-e 20 kilogramm, mint 10 amper. A másik probléma ezzel az, hogy a kormány *preferenciáit* nem az fejezi ki, hogy mennyi pénzt szán az egészségügyre, hanem az, hogy a mindenre összesen szánt pénz mekkora *hányadát* szánja az egészségügyre. Persze, hogy ma több pénzt költ egészségügyre, mint 20 évvel ezelőtt, de ma több pénzt költ *minden másra* is, tehát ebből -- ha valaki ilyen módon szeretné mérni -- nem derül ki, hogy "mennyire fontos" a kormány számára az egészségügy.
+
+A gazdaság egy elképesztően (de nem használhatatlanságig) leegyszerűsített modellje a következő: valamennyi értéket megtermelünk $\rightarrow$ ennek valamekkora hányadát az állam elszedi (adók, járulékok) $\rightarrow$ ezt esetleg kiegészíti hitelfelvétellel (költségvetési hiány) $\rightarrow$ az ilyen módon megszerzett (elszedett + hitelként felvett) pénz valamekkora részét az egészségügynek adja. Ha tehát valaki azt kérdezi, hogy hogyan juthatna több az egészségügyre, akkor a válasz kiolvasható ebből: *vagy* több értéket kell termelni, *vagy* nagyobb arányban kell az államnak a termelt értékből beszedni, *vagy* több hitelt kell felvenni, *vagy* a megszerzett pénzből nagyobb arányban kell az egészségügynek adni (vagy ezek valamilyen kombinációja). Most nekünk nem annyira fontos, de egyébként az egész közgazdaságtan alapproblémája épp az, hogy ezek nem egyszeri, önmagukban álló döntések, hanem az egész rendszer visszahat saját magára: ha *most* nagyon sok pénzt szedek be, akkor az lecsökkentheti, hogy *később* mennyi kerül megtermelésre, ha jól allokálom a pénzeket, akkor később nagyobb lehet a növekedés stb.
+
+Ez a weboldal a fentiekben kíván segítséget adni: megadja a költségvetés különböző területekre költött kiadásait, de megadja hozzá azokat a további információkat, számításokat is, amik segítik a fenti csapdák elkerülését és a valós kép összeállítását. Filozofikusabb értelemben a célom az információkhoz való demokratikus hozzáférés elősegítése volt, hogy ezek az adatok mindenki számára elérhetőek legyen, mégpedig értelmezhető formában (hiszen itt a megfelelő értelmezés majdnem olyan fontos, mint a nyers adatokhoz való hozzáférés). Ahol lehet, vizualizációkat alkalmaztam, mert a megfelelő ábrák sokkal könnyebbé teszik egy számtenger megértését.
+
+Bízom benne, hogy ilyen módon hozzájárul ez a weboldal a múltbeli adatok és a jelen helyzet jobb megértéséhez, ezen keresztül pedig segíti a jövőre vonatkozó viták színvonalának emelését is.
+
+Az oldal megvalósításához kiindulópont, hogy rendelkezzünk a költségvetések múltbeli adataival. Ez nem teljesen nyilvánvaló kérdés, ezért egy külön [hobbiprojekt keretében](https://github.com/ferenci-tamas/magyar-koltsegvetes-adatbazis) töltöttem le a múltbeli költségvetések adatait; ott elolvasható az összes ezzel kapcsolatos részlet, valamint megtalálható egy adatbázisa is a magyar költségvetéseknek 1949-től napjainkig. A most felhasznált adatok 2001-től, illetve, bizonyos esetekben, 1995-től érhetőek el, egészen 2027-ig.
+
+# Honnan szerezzünk ehhez adatot?
+
+Az, hogy az állam mennyi pénzt szán az egészségügyre, a mindenkori költségvetésből olvasható ki, hiszen az épp azt tartalmazza (többek között), hogy az állam mire mennyi pénzt szán. A dolog azonban ennél több szempontból is bonyolultabb. Az első probléma, hogy a költségvetésben a kiadások nem funkciók -- egészségügy, oktatás, nyugdíj stb. -- szerint vannak csoportosítva, hanem intézményrendszer szerint. Ez elég nagy probléma, mert ugyanazon funkcióhoz tartozó kiadás számos helyen megjelenhet (a Honvédkórház a Honvédelmi Minisztérium fejezetében fog szerepelni, az allergia elleni védekezés egy része az agrárminisztérium fejezetében, a rehabilitáció a szociális minisztériumnál és így tovább). Elvileg tehát végig kellene olvasni -- és egyesével besorolni -- mind a sok ezer sort; a jó hír, hogy ezt a költségvetés készítői megteszik helyettünk, így születik meg a funkcionális kiadásokat tartalmazó tábla. Ez lesz az, amire szükségünk van! (Vagy, ha még pontosabbak akarunk lenni, a konszolidált funkcionális kiadásokat kell használnunk a mostani célunk érdekében. A konszolidálás azt jelenti, hogy ha az államháztartás egyik alrendszere egy másik alrendszernek pénzt küld, akkor az nem jelenik meg az előbbinél kiadásként, az utóbbinál pedig bevételként, hiszen az államháztartás egészét nézve egy ilyen mozgás neutrális.)
+
+További nehézség ennek kapcsán, hogy a gyakorlatban két *különböző* funkcionális osztályozási rendszer is [használatban van](https://www.allamkincstar.gov.hu/pfile/file?path=/Koltsegvetes/Kozponti_alrendszer_-_Merlegek/funkcionalis-merlegek/Allamhaztartasi_funkcionalis_bontas_szerinti_anyagok/Modszertani_leiras_az_allamhaztartas_funkcionalis_kiadasaihoz.docx&inline=true): egy hazai és egy nemzetközileg egységes, az ún. [COFOG-rendszer](https://www.ksh.hu/cofog_menu). A kettő szerencsére nagyjából kompatibilis egymással (a megfeleltetéseket a lenti ábrák és elemzések tartalmazni fogják, ezeket beépítettem). Mindenesetre azt el kell mondani, hogy ha a költségvetések hazai adatait nézzük, ott a besorolás a magyar rendszer szerinti lesz, viszont ha a nemzetközi adatszolgáltatások számára készülő statisztikákból [kérjük le](https://ec.europa.eu/eurostat/databrowser/view/gov_10a_exp/default/table?lang=en) a kiadási adatokat, az a COFOG-rendszer szerinti lesz.
+
+A második probléma, hogy valójában a költségvetésnek több állapota van:
+
+- Az eredeti előirányzat: amennyit eredetileg terveztek.
+- A módosított előirányzat: a tervezet menet közben módosítható (akár már az első benyújtás során, még mielőtt törvény lenne belőle, akár a már törvényként megjelent költségvetés is módosítható).
+- A teljesítés: az utólagos visszatekintés, hogy mennyi lett a tényleges költés (szemben az előzőekkel, amik mind tervezett értékek). Ezt az ún. zárszámadás tartalmazza.
+
+Szigorúan véve nekünk a teljesítés a fontos (hiszen ez mondja meg, hogy mennyi lett a *tényleges* költés), de azért érdekes kérdés lehet az eredeti előirányzatot is megnézni, hiszen ez meg arról mond valamit, hogy milyen minőségű volt a költségvetés tervezése, vagy milyen, előre nem látható események történtek. A nemzetközi adatszolgáltatás csak a teljesítésről szól, nem az előirányzatról.
+
+A harmadik problémakör az, hogy milyen szemléletű adatokról beszélünk: a költségvetések kapcsán létezik pénzforgalmi szemléletű és eredményszemléletű érték. A pénzforgalmi szemlélet azt jelenti, hogy minden tranzakciót, legyen az akár kiadás, akár bevétel, arra az időpontra könyvelünk le, amikor a hozzá tartozó pénz fizikailag gazdát cserél, tehát megérkezik a bevételünk vagy kifizetjük a kiadásunkat, nem pedig akkor, amikor a tranzakció megtörténik. Ez utóbbi az eredményszemlélet. A különbség megértéséhez nem kell országban gondolkoznunk: mondjuk egy vállalkozó elvégez és kiszámláz egy munkát aznapi teljesítéssel, ekkor eredményszemléletben arra a napra kellene könyvelni -- de hogy a pénz mikor érkezik meg fizikailag, az teljesen más kérdés, lehet, hogy a vevő készpénzben rögtön kifizeti, lehet, hogy 30 napra fizet átutalással, lehet, hogy 90 napra. Pénzforgalmi szemléletben arra a dátumra könyveljük, amikor a pénz megérkezik, ha aznap, akkor aznapra (ez esetben nincs különbség az eredményszemlélethez képest), de ha 90 nap múlva kapjuk meg, akkor 90 nappal későbbi dátumra. Vagy fordítva: ki kellene fizetnünk a februári gázszámlát, de késedelembe esünk -- ez a kiadás eredményszemléletben mindenképp februári, de pénzforgalmi szemléletben akkori, amikor végül is kifizetjük. A pénzforgalmi szemlélet előnye, hogy sokkal egyszerűbb, hamarabb meghatározható, hátránya, hogy igazából nem a valós folyamatokról ad képet (hiszen a mi munkánk leírására aligha jó az a mutató, ami attól is függ, hogy a vevőnk mennyit késik a fizetéssel). Amit tudni kell, hogy a költségvetés mellékleteiben közölt számok pénzforgalmi szemléletűek, az Eurostatnál meglevők viszont eredményszemléletűek.
+
+# Mit hasonlítsunk mihez?
+
+A fentiekben legtöbbször időbeli összehasonlításról beszéltem (ugyanazon ország különböző időpontbeli adatainak egybevetése), és a lenti grafikonok is erről fognak alapvetően szólni. Ennek az az oka, hogy a "többet költünk, mint régen?" ("mennyivel költünk többet?" stb.) típusú kérdések megválaszolásához erre van szükség -- azokkal a korrekciókkal, amik a fenti okokból szükségesek, és amiket majd meg is fogunk tenni. De valójában egyéb kérdések is felvethetőek, vegyük ugyanis észre, hogy az "eleget költünk?" ("nem kellene-e még többet költeni?" stb.) típusú kérdések már *mást* jelentenek! Ennél ugyanis nem egy múltbeli állapothoz való viszonyítást tartalmaz a kérdés, hanem valamiféle ideális/elég jó/elvárható állapothoz való viszonyítást. Lehet, hogy szó szerint nincsen benne, de implicite ezt tartalmazza az "eleget költünk-e" kérdés.
+
+A bökkenő az, hogy míg a múltbeli adat egy egyértelműen meghatározott érték (még ha az interpretációja nem is minden problémától mentes, mint láttuk), addig az, hogy mit nevezünk "ideális", "elég jó", "elvárható" értéknek, egy sokkal-sokkal képlékenyebb dolog. A gyakorlatban sokszor más országokhoz viszonyítanak; ez persze azt a háttérfeltételezést jelenti, hogy ők "ideálisan", "elég jól", "elvárhatóan" költenek (például) egészségügyre. Gyakori, hogy pont emiatt Nyugat-Európa a viszonyítási alap (mondván, hogy ők jelentik a fejlett, jól működő országcsoportot). De néha pont, hogy a környező országokhoz szokás viszonyítani, ebben is van racionalitás, mert lehet arra hivatkozni, hogy ez kiszűri a kormány által -- pláne rövid távon -- nehezen befolyásolható, múltból örökölt tényezőket. Akárhogy is, látni kell, hogy ha egy ilyen elemzéshez összehasonlítási alapot képező országot vagy országokat választunk, akkor azzal egyúttal kérdést is választunk, amire válaszolni fogunk.
+
+# Eredmények
+
+Elsőként nézzük meg, hogy mennyit költött nominálisan (vagyis forintban mérve, és az adott évi forintban mérve) az állam az egyes funkciókra az elmúlt évtizedekben! Az ábra alapbeállítás szerint az egészségügyet mutatja, de bármilyen más funkció is kiválasztható. Használható mind a magyar, mind a nemzetközi csoportosítás; választható, hogy egy főcsoport egésze jelenjen meg (ha a csoport beállítása "Összesen"), de bármely konkrét csoport is kiválasztható.
+
+Bizonyos esetekben a kiválasztott funkció mind a hazai, mind a nemzetközi osztályozásban benne van azonos adattartalommal (vagy előállítható, mint a másik osztályozás bizonyos kategóriáinak összege), ez onnan látszik, hogy a funkciónak hazai és nemzetközi kódja egyaránt van. Máskor csak az egyik osztályozásban szerepel, ilyenkor a másik kód ki van húzva. Az előbbi esetben az ábrán három görbe fog látszódni: a pénzforgalmi tervezet, a pénzforgalmi teljesítés és az eredményszemléletű teljesítés. Ha a funkció csak a magyar osztályozásban jelenik meg, akkor csak két pénzforgalmi görbe látszódik, ha csak a nemzetköziben, akkor egyedül eredményszemléletű görbe lesz.
+
+A legfontosabb itt az eredményszemléletű teljesítés, a pénzforgalmi adatok mindössze két, de fontos okból szerepelnek egyáltalán az ábrán: egyrészt, hogy a tervezés minőségét, vagy, jobb esetben, a váratlan események hatását is lehessen érzékelni (mennyire van közel az előirányzat és a teljesítés -- ez csak pénzforgalmi szemléletben vizsgálható, mert eredményszemléletű előirányzat-adatunk nincsen), másrészt mert az eredményszemléletű teljesítés csak jókora időkéséssel érhető el, így a legfrissebb egy-két költségvetésnél csak pénzforgalmi adatunk lesz, viszont ennek számai természetesen csak a pénzforgalmi számokkal vethetőek össze a múltbeliek közül. Ez általában is igaz, a későbbi grafikonokra is.
+
+Nézzük akkor az eredményeket:
+
+```{r}
+category_chart("value", axis_name = "Kiadás [Mrd Ft]", unit = "Mrd Ft",
+               title = "A magyar költségvetés kiadásai nominálisan")
+```
+
+Amint megtárgyaltuk, időbeli összehasonlítás az ezen az ábrán látható nyers számok, tehát az adott évi áron kifejezett -- szép szóval: folyó áras vagy nominális -- összegek között értelmetlen. Ez az ábra is legfeljebb annyiban fontos, hogy mutatja a későbbi számításokhoz felhasznált bemenő adatokat, de önmagában sok teteje nincsen.
+
+Mit tudunk tenni?
+
+Az első megoldási lehetőség, hogy a pénzösszeget *viszonyítjuk* valamihez. Ez azért jó, mert bár a forint eltér év és év között, de a százalék ugyanaz a mértékegység, tehát az ilyen arányok jól összehasonlíthatóak évek (vagy akár országok) között. Az egyedüli kérdés az, hogy mihez viszonyítsunk? A gyakorlatban két megoldást szoktak használni.
+
+Az első lehetőség, hogy az adott funkcióra költött pénzt az összes kiadáshoz viszonyítjuk. Ez felel meg a bevezetőben említett preferencia kérdésének: a kormány a pénz mekkora hányadát szánja (például) az egészségügyre? Legközvetlenebbül ez mutatja a kormány értékeit, választását, hiszen a közvetlen döntése ebben van, hogy a pénzt hogyan osztja szét a különböző területek között.
+
+Ezt az arányt mutatja a következő ábra:
+
+```{r}
+category_chart("prop", axis_name = "Kiadás [az összes kiadás %-ában]", unit = "%",
+               title = "A magyar költségvetés kiadásai az összes kiadáshoz viszonyítva")
+```
+
+A kormány preferenciáinak leírására tehát ez a helyes mutató, de egy ellenérv azért felvethető: a kormány preferenciáiba, kiterjesztett értelemben, az is beleérthető, hogy egyáltalán mennyi pénzt, a megtermelt jövedelem mekkora hányadát szedi be. Ezért lehet értelme egy olyan mutatónak is, melyben a bruttó hazai termékhez viszonyítunk: a megtermelt érték mekkora részét fordítjuk (például) egészségügyre? Ez tehát egy két lépcsőt átfogó kimutatás lesz, amibe beleértjük azt a döntést is, hogy mennyi pénzt szed be a kormány, *és* azt is, hogy ebből mekkora hányadot fordít egészségügyre.
+
+Az alábbi ábra ezt mutatja:
+
+```{r}
+category_chart("propgdp", axis_name = "Kiadás [a GDP %-ában]", unit = "%",
+               title = "A magyar költségvetés kiadásai a GDP-hez viszonyítva")
+```
+
+(Ez az ábra nemzetközileg talán kicsit jobban összevethető, mert kiküszöböli annak a hatását, hogy az egyes államok eltérő arányban szedik be a megtermelt jövedelmet, ilyen értelemben ez a második viszonyítás semleges ezekre a különbségekre nézve. Ez persze valójában döntés kérdése: mit akarunk beleérteni a kormány által meghatározott paraméterek körébe?)
+
+Látható tehát, hogy nem arról van szó, hogy az egyik mutató jó, a másik meg rossz -- mást írnak le.
+
+A két viszonyítás közül az elsőnek, tehát az összes kiadáshoz arányosításnak megvan az a tulajdonsága, hogy a különböző kategóriák együtt 100%-ot adnak ki. Ez lehetővé teszi, hogy abból is látványos ábrát készítsünk, ha nem csak egy, hanem az *összes* arányt feltüntetjük. (Természetesen ilyenkor választanunk kell, hogy a három adatfajta közül melyiket használjuk.) Egy ilyen ábra kézenfekvően kiegészíthető az egyes főcsoportokon *belüli* megoszlással is (a különböző csoportok között); ilyenkor természetesen választanunk kell, hogy továbbra is a teljes összeghez viszonyítunk, ez esetben az ábra már nem fog 100%-ig halmozódni, vagy inkább a főcsoporton belül *is* a megoszlást vizsgáljuk.
+
+Mindezt láthatjuk ezen az ábrán:
+
+```{r}
+category_chart(
+  c("Összes kiadás" = "prop", "Főcsoport kiadásai" = "propParent"),
+  axis_name = c("Kiadás [az összes kiadás %-ában]",
+                "Kiadás [a főcsoport kiadásainak %-ában]"),
+  unit = "%",
+  var_label = "Viszonyítási alap:",
+  title = "A magyar költségvetés kiadásainak összetétele",
+  stack = TRUE
+)
+```
+
+Van azonban a viszonyításon túl még egy, alapvetően más irányból közelítő lehetőség a különböző évek összehasonlíthatóságának megteremtésére.
+
+Említettem, hogy a [fehér kenyér](https://www.ksh.hu/stadat_files/ara/hu/ara0004.html) 173 forint volt 2005-ben, ha hozzátesszük, hogy 925 forint 2025-ben, akkor eléggé adja magát egy ötlet: tartsuk meg a forintot, ne viszonyítsuk semmihez -- csak épp *váltsuk át* a különböző évek között! Hiszen a fenti számok alapján mondhatjuk, hogy ha megszorozzuk a 2005-ös forintértékeket $925/173 = 5,\!35$-tel, akkor megkaptuk a kérdéses összeget, csak épp 2025-ös forintban. (Vagy fordítva, a 2025-ös forintértékeket osztjuk ezzel a számmal, és így átszámolunk mindent 2005-ös forintra; ez mindegy, a lényeg, hogy ugyanarra az évre térjünk át.) Ez a módszer tökéletesen működne akkor, ha az állam *csak* fehér kenyeret venne a beszedett pénzből. A helyzet azonban nem ez. Az ember első gondolata, hogy semmi baj, ott van az infláció, aminek *pont* az a lényege, hogy nem csak egyetlen termék árának alakulását méri, hanem egy egész termékkosárét. Ez nem rossz ötlet, csak az a baj, hogy ez valójában *fogyasztói* termékkosár, tehát még mindig nem az igazi, hiszen az állam néha vesz olyan dolgokat is, mint vadászbombázó vagy merítéklétrás kotrógép, amik nem kifejezetten fogyasztói termékek (és ennek megfelelően az áruk alakulása nincs benne az inflációban). De valójában még a fogyasztói termékkosárban szereplő termékeket sem olyan arányban veszi, mint a fogyasztók, és akkor a szolgáltatásokról, vagy olyan tételekről, mint az orvosok és pedagógusok bére még nem is beszéltem. Egy szó mint száz, nem biztos, hogy ez a legjobb átváltás, de a helyzet nem fekete-fehér: a pénzbeli juttatásoknál (nyugdíj, családtámogatás) igenis a fogyasztói árindex a megfelelő váltószám.
+
+Általánosságban azonban jobb megoldás az ún. GDP-deflátor (GDP implicit árindex) használata, amely a GDP egész körét figyelembe veszi, így közelebb van a valósághoz. A lenti grafikonnál ennek megfelelően ez az alapértelmezett beállítás. Még jobb lehet a közösségi fogyasztásból számolt implicit árindex használata, de ezt a KSH nem közli készen.
+
+Az alábbi ábra mutatja az egyes területekre költött kiadásokat, de immár átváltott forintban (szép szóval: reálértéken); az átszámítás 2025-ös forintra történt:
+
+```{r}
+category_chart(
+  c("GDP implicit árindex" = "valuedefl", "Fogyasztói árindex" = "valueinfl"),
+  axis_name = c("Kiadás 2025-ös Ft-ban [Mrd Ft]\n(GDP implicit árindex alapján)",
+                "Kiadás 2025-ös Ft-ban [Mrd Ft]\n(fogyasztói árindex alapján)"),
+  unit = "Mrd Ft",
+  var_label = "Az összegek évek közti átváltásának alapja:",
+  title = "A magyar költségvetés kiadásai reálértékben"
+)
+```
+
+# Technikai részletek
+
+Az adatok feldolgozása [R nyelven](https://ferenci-tamas.github.io/r-nyelv/) történt, a weboldal [Quarto](https://quarto.org/) alapú, az interaktív ábrák [ECharts](https://echarts.apache.org/en/index.html) segítségével készültek. Az ábrák kódolásához Claude Opus 5.5-öt használtam.
+
+Az adatfeldolgozás lépései a qmd fájlban megtalálhatóak, így az oldalam ilyen szempontból is transzparens és reprodukálható; itt a legfontosabb elemeket emelem most ki külön is.
+
+Először is, az adatforrások a következők:
+
+- A költségvetések pénzforgalmi adatainak (mind az előirányzat, mind a teljesítés) adatforrása a Parlament elé beterjesztett költségvetések és zárszámadások indoklásainak mellékletei között szereplő "Államháztartás konszolidált funkcionális kiadásai" tábla. Ezeket egy [másik projekt](https://github.com/ferenci-tamas/magyar-koltsegvetes-adatbazis) keretében gyűjtöttem össze; a szükséges táblák 2001-től voltak fellelhetőek, 2002 kivételével (ahhoz sajnos nem találtam meg a táblát). Amint annál a projektnél is megjegyeztem, bizonyos esetekben *ugyanazon* évre, és *ugyanazon* fázisra (előirányzat, módosított előirányzat, teljesítés) is eltérő számok szerepelnek a különböző évi táblákban, aminek az okát nem értem, de mindenesetre így fontos volt, hogy egységes legyek, ezért mindenhol a zárszámadásokban szereplő adatsorokat használtam, mind az előirányzatra, mind a teljesítésre. A kivétel csak a 2025-26-27 volt, hiszen ezekre az évekre még nincs zárszámadás, itt a tervezetből vettem ki a számokat. Ez azt is jelenti, hogy itt egy törés van, vagy lehet az adatsorban (ennek a jelentőségét nem tudom pontosan megítélni, hiszen eleve sem értem, hogy mi az eltérés oka, azt gondolnám, hogy nem szabadna lennie -- ez esetben nem lenne törés sem -- és így nem tudom, hogy ha mégis van, az mennyire szisztematikus). Ahol adathiány volt -- ez pár esetben az F01.e csoportnál fordult elő, olyan is volt, hogy hiányzott az egész sora -- ott azt feltételeztem, hogy az mind 0-t jelent.
+- Az eredményszemléletű (teljesítési) adatok forrása az Eurostat [gov_10a_exp](https://ec.europa.eu/eurostat/databrowser/view/gov_10a_exp/default/table?lang=en) táblája volt (kormányzati szektor, S13, összes kormányzati kiadás elem, TE).
+- Az inflációs adatok forrása nem a KSH fogyasztói árindexe volt, hanem az Eurostat HICP árindexe ([prc_hicp_aind](https://ec.europa.eu/eurostat/databrowser/view/prc_hicp_aind/default/table?lang=en) tábla, minden elem, CP00, átlagos éves változás, RCH_A_AVG). A kettő között nagy különbség nincs, a választásom oka egyszerűen az volt, hogy ha valaha nemzetközi összehasonlítással akarjuk kiegészíteni a fenti vizsgálatokat, akkor ez lesz elérhető egységes metodikával más országokra. A jelenleg még nem ismert 2026-os és 2027-es infláció értékeként a 2027-es költségvetési tervezetben [szereplő](https://www.parlament.hu/irom43/00950/00950KIEGSZ001.pdf) előrejelzéseket használtam fel. (Itt tehát van egy módszertani törés, de ennek nagy jelentősége vélhetően nincsen, hiszen ezek amúgy is becsült értékek, és a becslés hibája jó eséllyel nagyobb, mint a két metodika közti különbség.) Mivel becsült értékről van szó, így a reálértéknél a 2026-os és 2027-es számokat óvatosan kell kezelni, szerencsére most alacsony inflációs időszak van, így ennek nagy jelentősége nincsen.
+- A GDP-deflátor adatforrása az Eurostat [nama_10_gdp](https://ec.europa.eu/eurostat/databrowser/view/NAMA_10_GDP/default/table?lang=en) táblája (piaci áron vett bruttó hazai termék, B1GQ, nemzeti valutában mért implicit árindex, PD_PCH_PRE_NAC). Az inflációhoz hasonlóan a jelenleg még nem ismert 2026-os és 2027-es értékként a 2027-es költségvetési tervezetben [szereplő](https://www.parlament.hu/irom43/00950/00950KIEGSZ001.pdf) előrejelzéseket használtam fel, így ugyanaz a figyelmeztetés érvényes itt is.
+- A GDP-re vonatkozó adatok forrása az Eurostat [nama_10_gdp](https://ec.europa.eu/eurostat/databrowser/view/NAMA_10_GDP/default/table?lang=en) táblája (piaci áron vett bruttó hazai termék, B1GQ, folyó áras nemzeti valutában, CP_MNAC). Az előbbiekhez hasonlóan a jelenleg még nem ismert 2026-os és 2027-es értékként itt is a 2027-es költségvetési tervezetben [szereplő](https://www.parlament.hu/irom43/00950/00950KIEGSZ001.pdf) előrejelzéseket használtam fel, így ugyanaz a figyelmeztetés érvényes itt is, ezen felül az értékek itt "csak" egész milliárd forintra voltak megadva, így a pontosság kisebb, mint a tized millió forintra megadott múltbeli adatoknál (de ennek nagyjából nulla jelentősége van, hiszen az előrejelzés hibája nyilván jóval nagyobb, mint egymilliárd forint).
+
+A legfontosabb problémát a fenti adatok kapcsán a hazai adatok nemzeti, és a nemzetközi adatok COFOG szerinti besorolásának egyeztetése jelentette. Ehhez a kiindulópontot a Magyar Államkincstár által [közzétett](https://www.allamkincstar.gov.hu/pfile/file?path=/Koltsegvetes/Kozponti_alrendszer_-_Merlegek/funkcionalis-merlegek/Allamhaztartasi_funkcionalis_bontas_szerinti_anyagok/Funkcionalis_megfeleltetes.xls&inline=true) funkcionális megfeleltetési tábla jelentette. Ez alapján 20 esetet tudtam azonosítani, ahol egy hazai kód és egy COFOG-kód tökéletesen megegyezett egymással; ezeket a BridgeData.csv tartalmazza. Egy kivétellel minden esetben főcsoport főcsoportnak, csoport csoportnak felelt meg; az egyetlen kivétel az államadósság, ami a COFOG-ban csoport, a magyar besorolásban főcsoport. A direkt megfeleltetéseken túl `r length(aggregates)` esetben fordult elő, hogy az egyik nómenklatúra kódja a másikban bizonyos kódok *összegének* felelt meg. Ezek az esetek a következők: `r written_out("GF")`, illetve, fordított irányban, `r written_out("F")`. (Egyetlen potenciálisan bizonytalan döntést kellett hoznom: az F01.f.5-nek valamiért nem volt megfelelője a megfeleltetési táblában; itt feltételeztem, hogy a szomszédos kódokhoz hasonlóan részben az F.01.2.1-hez, részben az F.01.2.2-höz tartozik, ilyen módon a GF0102 csoportnak felel meg. Még egy esetben tértem el a hivatalos táblától: az F08.d és az F08.e megfeleltetése nyilvánvaló elgépelés volt, ezeket javítottam.) A fenti egy-több típusú kapcsolatokat szintén tartalmazza az adatbázis, mert ezeket kézzel hozzáadtam a táblákhoz (és a grafikonok feliratozása is ennek megfelelő).
+
+A COFOG-kategóriák magyar neveit a cofog-kod-nev.csv tartalmazza. Azokban az esetekben, ahol egy kategória a hazai osztályozásban és a COFOG-ban egyaránt szerepelt, a megjelentetett név a hazai volt.
+
+A teljes kiadási összeget kézzel számoltam ki a főcsoportok összegeként, illetve a főcsoportok értékeit oszlopként is hozzáadtam a táblához (hogy könnyen lehessen arányt számolni).

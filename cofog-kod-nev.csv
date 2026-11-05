@@ -1,0 +1,81 @@
+﻿cofog,cofogMagyar
+GF0101,"Végrehajtó és törvényhozó szervek, pénzügyi és költségvetési ügyek, külügyek"
+GF0102,Gazdasági segítségnyújtás más országok részére
+GF0103,Általános közszolgáltatások
+GF0104,Alapkutatás
+GF0105,Az általános közszolgáltatásokhoz kapcsolódó kutatás-fejlesztés
+GF0106,Máshová nem sorolható általános közszolgáltatások
+GF0107,Az államadóssággal kapcsolatos tranzakciók
+GF0108,"A kormányzat alszektorai közötti általános jellegű, funkcióhoz nem köthető transzferek"
+GF01,Általános közszolgáltatások
+GF0201,Katonai védelem
+GF0202,Polgári honvédelem
+GF0203,Külföldi katonai segítségnyújtás
+GF0204,A védelemmel kapcsolatos kutatás-fejlesztés
+GF0205,Máshová nem sorolható védelmi ügyek
+GF02,Védelem
+GF0301,Közrend
+GF0302,Tűzvédelem
+GF0303,Igazságügy
+GF0304,Büntetés-végrehajtás
+GF0305,A közrenddel és közbiztonsággal kapcsolatos kutatás-fejlesztés
+GF0306,Máshová nem sorolható közrenddel és közbiztonsággal kapcsolatos ügyek
+GF03,Közrend és közbiztonság
+GF0401,"Általános gazdasági-, kereskedelmi- és munkaügyek"
+GF0402,"Mezőgazdaság, erdőgazdálkodás, halászat és vadgazdálkodás"
+GF0403,Fűtőanyag és energia
+GF0404,"Bányászat, feldolgozóipar és építőipar"
+GF0405,Szállítás
+GF0406,Távközlés
+GF0407,Egyéb iparágak
+GF0408,Gazdasági ügyekkel kapcsolatos kutatás-fejlesztés
+GF0409,Máshová nem sorolható gazdasági ügyek
+GF04,Gazdasági ügyek
+GF0501,Hulladékkezelés
+GF0502,Szennyvízkezelés
+GF0503,Szennyeződésmentesítés
+GF0504,Biológiai sokféleség védelme és tájvédelem
+GF0505,A környezetvédelemmel kapcsolatos kutatás-fejlesztés
+GF0506,Máshová nem sorolható környezetvédelemmel kapcsolatos ügyek
+GF05,Környezetvédelem
+GF0601,Lakásfejlesztési ügyek
+GF0602,Településfejlesztés
+GF0603,Vízellátás
+GF0604,Közvilágítás
+GF0605,A lakásügyekkel és települési infrastruktúrával kapcsolatos kutatás-fejlesztés
+GF0606,Máshová nem sorolható lakásügyek és települési infrastrukturális ügyek
+GF06,Lakásügyek és településfejlesztési ügyek
+GF0701,"Gyógyászati termékek, készülékek és felszerelések"
+GF0702,Járóbeteg-ellátás
+GF0703,Fekvőbeteg-ellátás
+GF0704,Közegészségügyi szolgáltatások
+GF0705,Az egészségüggyel kapcsolatos kutatás-fejlesztés
+GF0706,Máshová nem sorolható egészségügyi ellátás
+GF07,Egészségügy
+GF0801,Szabadidővel és sporttal kapcsolatos szolgáltatások
+GF0802,Kulturális szolgáltatások
+GF0803,Műsorszórás és kiadói szolgáltatás
+GF0804,Vallásügyek és egyéb közösségi szolgáltatások
+GF0805,"A szabadidővel, kultúrával és vallásügyekkel kapcsolatos kutatás-fejlesztés"
+GF0806,"Máshová nem sorolható szabadidő, kultúra és vallásügyek"
+GF08,"Szabadidő, kultúra és vallásügyek"
+GF0901,Iskola-előkészítő és alapfokú oktatás
+GF0902,Középfokú oktatás
+GF0903,"Középfok feletti, nem felsőfokú oktatás"
+GF0904,Felsőfokú oktatás
+GF0905,Oktatási szinthez nem kapcsolódó oktatás
+GF0906,Oktatáshoz kapcsolódó kiegészítő szolgáltatások
+GF0907,Oktatással kapcsolatos kutatás-fejlesztés
+GF0908,Máshová nem sorolható oktatás
+GF09,Oktatás
+GF1001,Betegség és rokkantság
+GF1002,Időskor
+GF1003,Hátramaradottak
+GF1004,Család és gyermekek
+GF1005,Munkanélküliség
+GF1006,Szociális jellegű lakásügyek
+GF1007,Máshová nem sorolható társadalmi kirekesztés
+GF1008,Szociális védelemmel kapcsolatos kutatás-fejlesztés
+GF1009,Máshová nem sorolható szociális védelem
+GF10,Szociális védelem
+TOTAL,Mindösszesen
