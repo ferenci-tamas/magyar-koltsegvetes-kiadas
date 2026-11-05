@@ -833,7 +833,7 @@ category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
     # hoverLayerThreshold (by default 3000) elements when last redrawn, as it has
     # here: the points of all categories, drawn before filtering, are still
     # fading out
-    e_chart(yearchr, hoverLayerThreshold = 1e6)
+    e_chart(yearchr, hoverLayerThreshold = 1e6, elementId = paste0(id, "_chart"))
   chart <- if (stack) {
     # triggerLineEvent: hovering an area, not only its points, tells which one it
     # is, for the tooltip
