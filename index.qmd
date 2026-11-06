@@ -1220,7 +1220,7 @@ category_chart("propgdp", axis_name = "Kiadás [a GDP %-ában]", unit = "%",
 
 Látható tehát, hogy nem arról van szó, hogy az egyik mutató jó, a másik meg rossz -- mást írnak le.
 
-A két viszonyítás közül az elsőnek, tehát az összes kiadáshoz arányosításnak megvan az a tulajdonsága, hogy a különböző kategóriák együtt 100%-ot adnak ki. Ez lehetővé teszi, hogy abból is látványos ábrát készítsünk, ha nem csak egy, hanem az *összes* arányt feltüntetjük. (Természetesen ilyenkor választanunk kell, hogy a három adatfajta közül melyiket használjuk.) Egy ilyen ábra kézenfekvően kiegészíthető az egyes főcsoportokon *belüli* megoszlással is (a különböző csoportok között); ilyenkor természetesen választanunk kell, hogy továbbra is a teljes összeghez viszonyítunk, ez esetben az ábra már nem fog 100%-ig halmozódni, vagy inkább a főcsoporton belül *is* a megoszlást vizsgáljuk.
+A két viszonyítás közül az elsőnek, tehát az összes kiadáshoz arányosításnak megvan az a tulajdonsága, hogy a különböző kategóriák együtt 100%-ot adnak ki. Ez lehetővé teszi, hogy abból is látványos ábrát készítsünk, ha nem csak egy, hanem az *összes* arányt feltüntetjük. (Természetesen ilyenkor választanunk kell, hogy a három adatfajta közül melyiket használjuk.) Egy ilyen ábra kézenfekvően kiegészíthető az egyes főcsoportokon *belüli* megoszlással is (a különböző csoportok között); ez akkor jön elő, ha a főcsoport nem Összesen értékre van állítva. Ilyenkor természetesen választanunk kell, hogy továbbra is a teljes összeghez viszonyítunk, ez esetben az ábra már nem fog 100%-ig halmozódni, vagy inkább a főcsoporton belül *is* a megoszlást vizsgáljuk.
 
 Mindezt láthatjuk ezen az ábrán:
 
