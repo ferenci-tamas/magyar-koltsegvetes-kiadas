@@ -483,19 +483,24 @@ add_data_download <- function(chart, unit, choice_id = NULL) {
                         // on the axis, and an empty cell (undefined) where a series has no value
                         function table() {
                         var model = chart.getModel(), axis = model.getComponent('xAxis');
-                        var header = [axis.get('name')], rows = {};
-                        // Skips the series hidden with the legend; those filtered out have no data
+                        var header = [axis.get('name')], rows = {}, columnOf = {};
+                        // Skips the series hidden with the legend; those filtered out have no data.
+                        // Series of the same name (in stack mode, the negative and the positive
+                        // parts of a category) share a column, with their values added up
                         model.eachSeries(function(series) {
-                        var points = series.getData(), y = points.mapDimension('y'), shown = false;
+                        var points = series.getData(), y = points.mapDimension('y');
+                        var j = columnOf[series.name] || header.length;
                         for (var i = 0; i < points.count(); i++) {
                         var name = points.getName(i), value = points.get(y, i);
                         if (isNaN(value)) continue;
                         // A year as a number, so that Excel takes it for one
                         rows[name] = rows[name] || [isNaN(name) ? name : Number(name)];
-                        rows[name][header.length] = value;
-                        shown = true;
+                        rows[name][j] = (rows[name][j] || 0) + value;
+                        if (j === header.length) {
+                        columnOf[series.name] = j;
+                        header.push(series.name + ' [' + data.unit + ']');
                         }
-                        if (shown) header.push(series.name + ' [' + data.unit + ']');
+                        }
                         });
                         var order = axis.get('data');
                         return [header].concat(Object.keys(rows)
@@ -742,6 +747,12 @@ category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
     # they first appear in
     chart_data <- RawData[paths$row, c("yearchr", var), with = FALSE][
       , `:=`(series = paths$series, key = paths$key)][order(yearchr)]
+    # Each column split into its negative part, in a column of its name with
+    # "_neg" appended, and its positive part, in the column itself, as the two are
+    # stacked separately (see the series below)
+    neg_var <- paste0(var, "_neg")
+    chart_data[, (neg_var) := lapply(.SD, pmin, 0), .SDcols = var]
+    chart_data[, (var) := lapply(.SD, pmax, 0), .SDcols = var]
     shared_data <- crosstalk::SharedData$new(
       chart_data[, !"key"] |> dplyr::group_by(series),
       key = as.character(chart_data$key), group = group
@@ -836,10 +847,25 @@ category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
     # fading out
     e_chart(yearchr, hoverLayerThreshold = 1e6, elementId = paste0(id, "_chart"))
   chart <- if (stack) {
-    # triggerLineEvent: hovering an area, not only its points, tells which one it
-    # is, for the tooltip
-    e_area_(chart, var[[1]], stack = "total", emphasis = list(focus = "series"),
-            triggerLineEvent = TRUE)
+    # Each category as two series, of its negative and of its positive parts, each
+    # stacked only on the series of the same sign, so the negative parts go below
+    # 0 and the positive ones above. (ECharts' default would stack a value on the
+    # values of its sign, which draws a category that is negative in a year as an
+    # area diving from its place in the stack to below 0 and back, and stacks a 0
+    # on the negative values if no category before it is positive in that year.)
+    # The series of the negative parts come first, with a symbol only where the
+    # part is below 0, not along 0 in every other year. triggerLineEvent: hovering
+    # an area, not only its points, tells which one it is, for the tooltip
+    chart |>
+      e_area_(neg_var[[1]], stack = "total", stackStrategy = "negative",
+              emphasis = list(focus = "series"), triggerLineEvent = TRUE,
+              symbolSize = htmlwidgets::JS("
+                function(value, params) {
+                  return value[params.dimensionNames[params.encode.y[0]]] < 0 ? 4 : 0;
+                }
+              ")) |>
+      e_area_(var[[1]], stack = "total", stackStrategy = "positive",
+              emphasis = list(focus = "series"), triggerLineEvent = TRUE)
   } else {
     e_line_(chart, var[[1]], emphasis = list(focus = "series"))
   }
@@ -911,16 +937,23 @@ category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
           parts.push(data.type,
                      'Vízszintes tengely: ' + model.getComponent('xAxis').get('name'),
                      'Függőleges tengely: ' + model.getComponent('yAxis').get('name'));
-          // Skips the series hidden with the legend; those filtered out have no data
+          // Skips the series hidden with the legend; those filtered out have no data.
+          // Series of the same name (in stack mode, the negative and the positive
+          // parts of a category) are added up
+          var sums = new Map();
           model.eachSeries(function(series) {
-            var points = series.getData(), y = points.mapDimension('y'), values = [];
+            var points = series.getData(), y = points.mapDimension('y');
+            var values = sums.get(series.name) || new Map();
             for (var i = 0; i < points.count(); i++) {
-              var value = points.get(y, i);
-              if (!isNaN(value)) {
-                values.push(points.getName(i) + ': ' + format.format(value) + data.unit);
-              }
+              var x = points.getName(i), value = points.get(y, i);
+              if (!isNaN(value)) values.set(x, (values.get(x) || 0) + value);
             }
-            if (values.length) parts.push(series.name + ': ' + values.join('; '));
+            if (values.size) sums.set(series.name, values);
+          });
+          sums.forEach(function(values, name) {
+            parts.push(name + ': ' + Array.from(values, function(entry) {
+              return entry[0] + ': ' + format.format(entry[1]) + data.unit;
+            }).join('; '));
           });
           var label = parts.filter(Boolean).join('. ').replace(/\\n/g, ' ') + '.';
           // The chart is also redrawn on hover
@@ -949,8 +982,11 @@ category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
             var column = whole ? choice.querySelector('input').value :
               choice.querySelector('input:checked').value;
             chart.setOption({
-              series: chart.getOption().series.map(function() {
-                return { encode: { y: column } };
+              series: chart.getOption().series.map(function(s) {
+                // In stack mode, the series of negative parts plot the column
+                // with _neg appended
+                var negative = /_neg$/.test([].concat(s.encode.y)[0]);
+                return { encode: { y: negative ? column + '_neg' : column } };
               }),
               yAxis: { name: data.axisNames[column] }
             });
@@ -974,12 +1010,25 @@ category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
     chart$x$opts$legend$data <- as.list(unique(labels))
     
     if (unit == "%") {
-      # Shares of a whole stack up to 100% at most, but rounding errors can put the
-      # top of the stack a hair above it, and then ECharts would run the axis to
-      # 120. (When the top stays at or below 100, so does ECharts' own maximum)
-      chart <- e_y_axis(chart, max = htmlwidgets::JS(
-        "function(value) { return value.max > 100 ? 100 : null; }"
-      ))
+      # The positive parts of a whole stack up to 100%, but rounding errors can put
+      # the top a hair above it, and negative parts too small to see push it up as
+      # much as they go below 0. ECharts would then run the axis to 120, or down to
+      # -20, so an overshoot of less than 0.5% of the axis is cut off, above 100 and
+      # below 0. (When the top stays at or below 100, so does ECharts' own maximum)
+      chart <- e_y_axis(
+        chart,
+        max = htmlwidgets::JS("
+          function(value) {
+            var range = value.max - Math.min(value.min, 0);
+            return value.max > 100 && value.max - 100 < 0.005 * range ? 100 : null;
+          }
+        "),
+        min = htmlwidgets::JS("
+          function(value) {
+            return value.min < 0 && -value.min < 0.005 * (value.max - value.min) ? 0 : null;
+          }
+        ")
+      )
     }
     
     chart <- chart |>
@@ -996,8 +1045,6 @@ category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
           var option = chart.getOption();
           var names = option.series.map(function(s) { return s.name; });
           var palette = option.color, years = option.xAxis[0].data;
-          var seriesOf = {};
-          data.series.forEach(function(id, i) { seriesOf[id] = i; });
 
           // The chart has a series for every part of every whole, so when the
           // filters change, this shows only the series left in the legend,
@@ -1005,13 +1052,18 @@ category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
           // first to their last
           new crosstalk.FilterHandle(data.group).on('change', function(e) {
             var keys = e.value && new Set(e.value.map(String));
-            var shown = [], hasYear = {};
+            var shown = {}, hasYear = {};
             option.dataset[0].source.forEach(function(row) {
               if (keys && !keys.has(String(row.XkeyX))) return;
-              shown[seriesOf[row.series]] = true;
+              shown[row.series] = true;
               hasYear[row.yearchr] = true;
             });
-            var legend = names.filter(function(name, i) { return shown[i]; });
+            // Each name once, as a category has a series for its negative and one
+            // for its positive parts
+            var legend = [];
+            names.forEach(function(name, i) {
+              if (shown[data.series[i]] && legend.indexOf(name) < 0) legend.push(name);
+            });
             var covered = years.filter(function(year) { return hasYear[year]; });
             var color = {};
             legend.forEach(function(name, i) {
@@ -1032,19 +1084,25 @@ category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
             });
           });
 
-          // The formatter of e_tooltip() only gets the hovered area
+          // The formatter of e_tooltip() only gets the hovered category: its
+          // negative part in a year when it's negative, else its positive part
           var format = option.tooltip[0].formatter, hovered = null;
+          function column(p) { return p.dimensionNames[p.encode.y[0]]; }
           chart.setOption({
             tooltip: {
               formatter: function(params) {
-                params = params.filter(function(p) { return p.seriesIndex === hovered; });
-                return params.length ? format(params) : '';
+                params = params.filter(function(p) { return p.seriesName === hovered; });
+                var shown = params.filter(function(p) { return p.value[column(p)] < 0; });
+                if (!shown.length) {
+                  shown = params.filter(function(p) { return !/_neg$/.test(column(p)); });
+                }
+                return shown.length ? format(shown) : '';
               }
             }
           });
 
           chart.on('mouseover', 'series', function(p) {
-            hovered = p.seriesIndex;
+            hovered = p.seriesName;
             // The tooltip was already drawn for this mouse move, so redraw it
             chart.dispatchAction({
               type: 'showTip', x: p.event.offsetX, y: p.event.offsetY
@@ -1277,3 +1335,5 @@ A legfontosabb problémát a fenti adatok kapcsán a hazai adatok nemzeti, és a
 A COFOG-kategóriák magyar neveit a [cofog-kod-nev.csv](https://github.com/ferenci-tamas/magyar-koltsegvetes-kiadas/blob/main/cofog-kod-nev.csv) tartalmazza. Azokban az esetekben, ahol egy kategória a hazai osztályozásban és a COFOG-ban egyaránt szerepelt, a megjelentetett név a hazai volt.
 
 A teljes kiadási összeget kézzel számoltam ki a főcsoportok összegeként, illetve a főcsoportok értékeit oszlopként is hozzáadtam a táblához (hogy könnyen lehessen arányt számolni).
+
+Előfordul (igaz, mindössze `r sum(RawData$value < 0)` esetben), hogy a nemzetközi kimutatásban szereplő kiadási érték negatív; ez meglepő lehet, de meghatározott eseteket, például ha állam értékesít bizonyos vagyontárgyakat, [tényleg így kell](https://ec.europa.eu/eurostat/statistics-explained/SEPDF/cache/42730.pdf?v=1512967044416454) rögzíteni. Ilyenkor az összetételi diagramon egy negatív csúcs is lesz, felfelé viszont 100% felé fog menni a görbe (hogy a kettőből kijöjjön a 100%-os összeg).
