@@ -749,9 +749,16 @@ category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
       , `:=`(series = paths$series, key = paths$key)][order(yearchr)]
     # Each column split into its negative part, in a column of its name with
     # "_neg" appended, and its positive part, in the column itself, as the two are
-    # stacked separately (see the series below)
+    # stacked separately (see the series below). The negative part is missing
+    # except around the years when it's below 0 (with 0 in the years just before
+    # and after, so that its area tapers off), as a series of zeros would still
+    # draw its line along 0
     neg_var <- paste0(var, "_neg")
-    chart_data[, (neg_var) := lapply(.SD, pmin, 0), .SDcols = var]
+    chart_data[, (neg_var) := lapply(.SD, \(x) {
+      below <- !is.na(x) & x < 0
+      fcase(below, x,
+            shift(below, fill = FALSE) | shift(below, type = "lead", fill = FALSE), 0)
+    }), by = series, .SDcols = var]
     chart_data[, (var) := lapply(.SD, pmax, 0), .SDcols = var]
     shared_data <- crosstalk::SharedData$new(
       chart_data[, !"key"] |> dplyr::group_by(series),
@@ -854,8 +861,8 @@ category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
     # area diving from its place in the stack to below 0 and back, and stacks a 0
     # on the negative values if no category before it is positive in that year.)
     # The series of the negative parts come first, with a symbol only where the
-    # part is below 0, not along 0 in every other year. triggerLineEvent: hovering
-    # an area, not only its points, tells which one it is, for the tooltip
+    # part is below 0, not at the zeros around it. triggerLineEvent: hovering an
+    # area, not only its points, tells which one it is, for the tooltip
     chart |>
       e_area_(neg_var[[1]], stack = "total", stackStrategy = "negative",
               emphasis = list(focus = "series"), triggerLineEvent = TRUE,
@@ -1103,14 +1110,19 @@ category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
 
           chart.on('mouseover', 'series', function(p) {
             hovered = p.seriesName;
+            // ECharts only emphasizes the hovered series, but a category has a
+            // series for its negative and one for its positive parts, so this
+            // emphasizes both, as hovering its name in the legend does
+            chart.dispatchAction({ type: 'highlight', seriesName: p.seriesName });
             // The tooltip was already drawn for this mouse move, so redraw it
             chart.dispatchAction({
               type: 'showTip', x: p.event.offsetX, y: p.event.offsetY
             });
           });
 
-          chart.on('mouseout', 'series', function() {
+          chart.on('mouseout', 'series', function(p) {
             hovered = null;
+            chart.dispatchAction({ type: 'downplay', seriesName: p.seriesName });
           });
         }
       ", data = list(group = group, series = as.list(ids)))
