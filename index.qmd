@@ -520,13 +520,15 @@ add_data_download <- function(chart, unit, choice_id = NULL) {
                         return String(Number(value.toPrecision(15)));
                         }
                         
+                        // Semicolons between the columns and decimal commas, as Excel expects them
+                        // with Hungarian regional settings
                         function csv(rows) {
                         var text = rows.map(function(row) {
                         return row.map(function(cell) {
                         if (cell === undefined) return '';
-                        if (typeof cell === 'number') return number(cell);
-                        return /[",\r\n]/.test(cell) ? '"' + cell.replace(/"/g, '""') + '"' : cell;
-                        }).join(',');
+                        if (typeof cell === 'number') return number(cell).replace('.', ',');
+                        return /[";\r\n]/.test(cell) ? '"' + cell.replace(/"/g, '""') + '"' : cell;
+                        }).join(';');
                         }).join('\r\n');
                         // The byte order mark tells Excel that the file is in UTF-8
                         return new Blob(['\ufeff' + text + '\r\n'], { type: 'text/csv;charset=utf-8' });
@@ -1297,7 +1299,7 @@ category_chart("propgdp", axis_name = "Kiadás [a GDP %-ában]", unit = "%",
 
 Látható tehát, hogy nem arról van szó, hogy az egyik mutató jó, a másik meg rossz -- mást írnak le.
 
-A két ábra között egy egyszerű, közvetlen megfeleltetés van: a kiadás-arányos hányadot megkapjuk, ha a GDP-arányos hányadot beszorozzuk azzal, hogy az állami kiadások összesen a GDP hány százalékát jelentik. Ezt szokás újraelosztási rátának nevezni, hiszen megmutatja, hogy az állam által kiosztott pénz hogy viszonyul a teljes bruttó hazai termékhez. (A jövedelemcentralizációs ráta pedig az, hogy az állam a GDP mekkora részét vonja magához. A kettő közti különbség a költségvetési hiány: ennyivel tud az állam többet kiosztani, mint amennyit magához vont.) Ezek az arányok fontosak, mert megmutatják az állam alapvető működési modelljét. Lehet, hogy egy állam sok szolgáltatást nyújt, sok támogatást ad, de sok pénzt is von el, vagy fordítva, nem von el sok pénzt, de cserében keveset is költ az állami funkciókra. Meg persze nagyon sok egyéb kombináció képzelhető el a kettő között (kivéve azt, hogy kevés pénzt szed el, de mégis sokat oszt ki, úgy, hogy közben a jövőt sem éli fel...).
+A két ábra között egy egyszerű, közvetlen megfeleltetés van: a kiadás-arányos hányadot megkapjuk, ha a GDP-arányos hányadot beszorozzuk azzal, hogy az állami kiadások összesen a GDP hány százalékát jelentik. Ezt szokás újraelosztási rátának nevezni, hiszen megmutatja, hogy az állam által kiosztott pénz hogy viszonyul a teljes bruttó hazai termékhez. (A jövedelemcentralizációs ráta pedig az, hogy az állam a GDP mekkora részét vonja magához. A kettő közti különbség a költségvetési hiány: ennyivel tud az állam többet kiosztani, mint amennyit magához vont.) Ez az arány fontos, mert megmutatja az állam alapvető működési modelljét: lehet, hogy egy állam sok szolgáltatást nyújt, sok támogatást ad, de sok pénzt is von el, vagy fordítva, nem von el sok pénzt, de cserében keveset is költ az állami funkciókra. Meg persze nagyon sok egyéb kombináció képzelhető el a kettő között (kivéve azt, hogy kevés pénzt szed el, de mégis sokat oszt ki, úgy, hogy közben a jövőt sem éli fel...). Természetesen számít a hatékonyság -- elképzelhető, hogy egy ország kevesebb pénzből is jobb minőségű szolgáltatásokat hoz ki ügyes szervezéssel és gazdálkodással, egy másik pedig többől is rosszabbat -- de azért a működési kereteket alapvetően meghatározza ez az arány.
 
 A két viszonyítás közül az elsőnek, tehát az összes kiadáshoz arányosításnak megvan az a tulajdonsága, hogy a különböző kategóriák együtt 100%-ot adnak ki. Ez lehetővé teszi, hogy abból is látványos ábrát készítsünk, ha nem csak egy, hanem az *összes* arányt feltüntetjük. (Természetesen ilyenkor választanunk kell, hogy a három adatfajta közül melyiket használjuk.) Egy ilyen ábra kézenfekvően kiegészíthető az egyes főcsoportokon *belüli* megoszlással is (a különböző csoportok között); ez akkor jön elő, ha a főcsoport nem "Összesen" értékre van állítva. Ilyenkor természetesen választanunk kell, hogy továbbra is a teljes összeghez viszonyítunk, ez esetben az ábra már nem fog 100%-ig halmozódni, vagy inkább a főcsoporton belül *is* a megoszlást vizsgáljuk.
 
