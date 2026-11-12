@@ -49,7 +49,11 @@ HunData <- rbind(
                         "2016. évi törvényi módosított", "2016. évi teljesítés"),
              year = c(2015, 2016, 2016, 2016),
              type = c("actual", "original_plan", "modified_plan", "actual"),
-             value = 0)
+             value = 0),
+  data.table(doc_year = 2027, doc_type = "Tervezet", row = 7, level = "subgroup",
+             huncode = "F01.e", hunname = "Műszaki fejlesztés",
+             column = "2027. évi előirányzat", year = 2027,
+             type = "original_plan", value = 0)
 )
 
 HunName <- unique(HunData[level %notin% c("total", "function"), .(hunMagyar = hunname, huncode)])
@@ -160,7 +164,7 @@ RawData <- merge(
   data.table(type = c("original_plan", "actual", "actual_cofog"),
              typeLabel = c("Tervezet (pénzforgalmi)", "Tényleges (pénzforgalmi)",
                            "Tényleges (eredményszemléletű)"))[
-    , typeLabel := factor(typeLabel, levels = typeLabel)])
+                             , typeLabel := factor(typeLabel, levels = typeLabel)])
 
 # The sum of `codes`, with each run of at least three consecutive codes written
 # as a range (e.g. GF0101–GF0106). Codes run on their final letter (F01.a,
@@ -1292,6 +1296,8 @@ category_chart("propgdp", axis_name = "Kiadás [a GDP %-ában]", unit = "%",
 (Ez az ábra nemzetközileg talán kicsit jobban összevethető, mert kiküszöböli annak a hatását, hogy az egyes államok eltérő arányban szedik be a megtermelt jövedelmet, ilyen értelemben ez a második viszonyítás semleges ezekre a különbségekre nézve. Ez persze valójában döntés kérdése: mit akarunk beleérteni a kormány által meghatározott paraméterek körébe?)
 
 Látható tehát, hogy nem arról van szó, hogy az egyik mutató jó, a másik meg rossz -- mást írnak le.
+
+A két ábra között egy egyszerű, közvetlen megfeleltetés van: a kiadás-arányos hányadot megkapjuk, ha a GDP-arányos hányadot beszorozzuk azzal, hogy az állami kiadások összesen a GDP hány százalékát jelentik. Ezt szokás újraelosztási rátának nevezni, hiszen megmutatja, hogy az állam által kiosztott pénz hogy viszonyul a teljes bruttó hazai termékhez. (A jövedelemcentralizációs ráta pedig az, hogy az állam a GDP mekkora részét vonja magához. A kettő közti különbség a költségvetési hiány: ennyivel tud az állam többet kiosztani, mint amennyit magához vont.) Ezek az arányok fontosak, mert megmutatják az állam alapvető működési modelljét. Lehet, hogy egy állam sok szolgáltatást nyújt, sok támogatást ad, de sok pénzt is von el, vagy fordítva, nem von el sok pénzt, de cserében keveset is költ az állami funkciókra. Meg persze nagyon sok egyéb kombináció képzelhető el a kettő között (kivéve azt, hogy kevés pénzt szed el, de mégis sokat oszt ki, úgy, hogy közben a jövőt sem éli fel...).
 
 A két viszonyítás közül az elsőnek, tehát az összes kiadáshoz arányosításnak megvan az a tulajdonsága, hogy a különböző kategóriák együtt 100%-ot adnak ki. Ez lehetővé teszi, hogy abból is látványos ábrát készítsünk, ha nem csak egy, hanem az *összes* arányt feltüntetjük. (Természetesen ilyenkor választanunk kell, hogy a három adatfajta közül melyiket használjuk.) Egy ilyen ábra kézenfekvően kiegészíthető az egyes főcsoportokon *belüli* megoszlással is (a különböző csoportok között); ez akkor jön elő, ha a főcsoport nem "Összesen" értékre van állítva. Ilyenkor természetesen választanunk kell, hogy továbbra is a teljes összeghez viszonyítunk, ez esetben az ábra már nem fog 100%-ig halmozódni, vagy inkább a főcsoporton belül *is* a megoszlást vizsgáljuk.
 
