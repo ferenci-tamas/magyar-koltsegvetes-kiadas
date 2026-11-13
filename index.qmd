@@ -674,9 +674,13 @@ add_download_menu <- function(chart, unit, id, choice_id = NULL,
                         // the room that takes
                         function copyOf(renderer) {
                         var width = chart.getWidth(), height = chart.getHeight();
+                        // The canvas copy is drawn at the pixel ratio of the images (see bitmap()), not
+                        // the screen's: ECharts would scale a copy with a higher one (as on phones) down
+                        // to theirs, blurring them slightly
                         var copy = renderer === 'svg' ?
                         echarts.init(null, null, { renderer: 'svg', ssr: true, width: width, height: height }) :
-                        echarts.init(document.createElement('div'), null, { width: width, height: height });
+                        echarts.init(document.createElement('div'), null,
+                        { width: width, height: height, devicePixelRatio: 2 });
                         var option = chart.getOption();
                         option.animation = false;
                         option.backgroundColor = chart.getModel().get('backgroundColor') || '#fff';
