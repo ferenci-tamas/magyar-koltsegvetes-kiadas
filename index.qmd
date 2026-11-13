@@ -470,18 +470,20 @@ filter_radio_dependent <- function(id, label, sharedData, group, parent_id,
   )
 }
 
-# Adds buttons to the toolbox of `chart`, after the ones already there, that
-# download the data it plots, as shown, in a CSV or an Excel file: a column of the
-# x values, then the plotted column of each series left by the filters and the
-# legend, headed by its name and `unit`. The file is named after the title of the
-# chart and, if the plotted column is chosen with the radio buttons `choice_id`,
-# the chosen one, and so is the PNG of the toolbox's saveAsImage button, if it has
-# one. With `download_axis_name = TRUE`, both files start with a line of the name
-# of the y axis, as shown (in one line). The Excel file is put together here (as a
-# zip of a few XML files), so that the page needs no library for it
-add_data_download <- function(chart, unit, choice_id = NULL,
+# Puts `chart` in a box with a download button (a dropdown with the id `id`) over
+# its top right corner, whose menu saves the chart as a PNG, a JPG or an SVG, or
+# the data it plots, as shown, in an Excel or a CSV file: a column of the x values,
+# then the plotted column of each series left by the filters and the legend, headed
+# by its name and `unit`. The images show the whole legend, even where the chart
+# scrolls it, and are taller for it. The files are named after the title of the
+# chart and, if the plotted column is chosen with the radio buttons `choice_id`, the
+# chosen one. With `download_axis_name = TRUE`, both data files start with a line of
+# the name of the y axis, as shown (in one line). The Excel file is put together here
+# (as a zip of a few XML files), so that the page needs no library for it. As the
+# result is no longer a widget, this comes after everything else done to the chart
+add_download_menu <- function(chart, unit, id, choice_id = NULL,
                               download_axis_name = FALSE) {
-  htmlwidgets::onRender(chart, r"-(
+  chart <- htmlwidgets::onRender(chart, r"-(
                         function(el, x, data) {
                         var chart = echarts.getInstanceByDom(el);
                         
@@ -658,58 +660,141 @@ add_data_download <- function(chart, unit, choice_id = NULL,
                         .replace(/\n/g, ' ').replace(/: /g, ' - ').replace(/[\\/:*?"<>|]/g, '-');
                         }
                         
-                        function save(blob, extension) {
+                        // The height of the legend of the chart `c` (of its items)
+                        function legendHeight(c) {
+                        var model = c.getModel().getComponent('legend');
+                        var view = model && c.getViewOfComponentModel(model);
+                        return view ? view.getContentGroup().getBoundingRect().height : 0;
+                        }
+                        
+                        // A copy of the chart as shown, for an image, drawn with ECharts' `renderer`
+                        // ('canvas' or 'svg'), without animation, on the background of the chart or
+                        // else white, as ECharts' own saveAsImage button would. Its legend is shown
+                        // whole, as an image can't scroll it, and the copy is taller than the chart by
+                        // the room that takes
+                        function copyOf(renderer) {
+                        var width = chart.getWidth(), height = chart.getHeight();
+                        var copy = renderer === 'svg' ?
+                        echarts.init(null, null, { renderer: 'svg', ssr: true, width: width, height: height }) :
+                        echarts.init(document.createElement('div'), null, { width: width, height: height });
+                        var option = chart.getOption();
+                        option.animation = false;
+                        option.backgroundColor = chart.getModel().get('backgroundColor') || '#fff';
+                        (option.legend || []).forEach(function(legend) { legend.type = 'plain'; });
+                        copy.setOption(option);
+                        // If a name is too long for a line of the legend (as on phones), the legend
+                        // becomes a column of the names broken into lines as wide as the room beside
+                        // the icon and the 5px gap after it. (Not rows, as ECharts would let the names
+                        // of more lines overlap the row above. Laid out in a chart tall enough not to
+                        // wrap the column into more)
+                        var legendModel = copy.getModel().getComponent('legend');
+                        if (legendModel) {
+                        // The padding of the legend is given as in CSS
+                        var padding = [].concat(legendModel.get('padding'));
+                        var right = padding.length > 1 ? padding[1] : padding[0];
+                        var room = width - right - (padding.length > 3 ? padding[3] : right);
+                        var items = copy.getViewOfComponentModel(legendModel).getContentGroup();
+                        if (items.getBoundingRect().width > room) {
+                        copy.resize({ width: width, height: 10 * height });
+                        copy.setOption({ legend: {
+                        orient: 'vertical',
+                        textStyle: {
+                        width: room - legendModel.get('itemWidth') - 5, overflow: 'break',
+                        // ECharts would set the lines as close as the size of the font, so that the
+                        // accents of a line touch the one above
+                        lineHeight: Math.round(1.4 * (legendModel.get(['textStyle', 'fontSize']) || 12))
+                        }
+                        } });
+                        }
+                        }
+                        var extra = Math.round(legendHeight(copy) - legendHeight(chart));
+                        copy.setOption({ grid: { bottom: option.grid[0].bottom + extra } });
+                        copy.resize({ width: width, height: height + extra });
+                        return copy;
+                        }
+                        
+                        // The chart as shown, as the data URL of a PNG or a JPG (`type` 'png' or
+                        // 'jpeg'), at twice the resolution
+                        function bitmap(type) {
+                        var copy = copyOf('canvas');
+                        var url = copy.getDataURL({ type: type, pixelRatio: 2 });
+                        copy.dispose();
+                        return url;
+                        }
+                        
+                        // The chart as shown, in an SVG file
+                        function svg() {
+                        var copy = copyOf('svg');
+                        var text = copy.renderToSVGString();
+                        copy.dispose();
+                        return new Blob([text], { type: 'image/svg+xml' });
+                        }
+                        
+                        // `file` is a Blob or, for a PNG or a JPG, a data URL
+                        function save(file, extension) {
                         var link = document.createElement('a');
-                        link.href = URL.createObjectURL(blob);
+                        link.href = file instanceof Blob ? URL.createObjectURL(file) : file;
                         link.download = fileName() + '.' + extension;
                         document.body.appendChild(link);
                         link.click();
                         link.remove();
                         // Once the download has surely started
+                        if (file instanceof Blob) {
                         setTimeout(function() { URL.revokeObjectURL(link.href); }, 60000);
                         }
+                        }
                         
-                        // Added here, not in R, as ECharts takes the onclick of a button of its own
-                        // only when the button is created
-                        chart.setOption({
-                        toolbox: {
-                        feature: {
-                        // A page of text
-                        myDataCsv: {
-                        show: true,
-                        title: 'Adatok letöltése (CSV)',
-                        icon: 'path://M11.5,2v56H51V14.8L38.4,2H11.5z M38.4,2.2v12.7H51 M19,27H43 M19,37H43 M19,47H43',
-                        onclick: function() { save(csv(table(), caption()), 'csv'); }
-                        },
-                        // A spreadsheet
-                        myDataXlsx: {
-                        show: true,
-                        title: 'Adatok letöltése (XLSX)',
-                        icon: 'path://M4,8H54V52H4Z M4,22.7H54 M4,37.3H54 M21,8V52 M37.5,8V52',
-                        onclick: function() { save(xlsx(table(), caption()), 'xlsx'); }
+                        // Each item of the menu saves in the format it names
+                        var menu = document.getElementById(data.menuId);
+                        menu.addEventListener('click', function(event) {
+                        var item = event.target.closest('[data-format]');
+                        if (!item) return;
+                        var format = item.dataset.format;
+                        if (format === 'png' || format === 'jpg') {
+                        save(bitmap(format === 'jpg' ? 'jpeg' : 'png'), format);
+                        } else if (format === 'svg') {
+                        save(svg(), 'svg');
+                        } else {
+                        save((format === 'csv' ? csv : xlsx)(table(), caption()), format);
                         }
-                        }
-                        }
-                        });
-                        
-                        // The saveAsImage button names its PNG at the click, after its own option,
-                        // so the name is updated whenever the chart has been redrawn. (A moment
-                        // later, as ECharts may say it has finished from within a setOption, and
-                        // then ignores another one)
-                        if (chart.getModel().getComponent('toolbox').get(['feature', 'saveAsImage'])) {
-                        var pngName;
-                        chart.on('finished', function() {
-                        var name = fileName();
-                        if (name === pngName) return;
-                        pngName = name;
-                        setTimeout(function() {
-                        chart.setOption({ toolbox: { feature: { saveAsImage: { name: name } } } });
-                        });
+                        // The menu closes, so keyboard users are taken back to the button
+                        menu.querySelector('[data-bs-toggle]').focus();
                         });
                         }
-                        }
-  )-", data = list(unit = unit, choiceId = choice_id,
+  )-", data = list(unit = unit, menuId = id, choiceId = choice_id,
                    downloadAxisName = download_axis_name))
+  
+  item <- \(format, label) htmltools::tags$li(htmltools::tags$button(
+    # Taller than Bootstrap's default, to be easier to tap
+    type = "button", class = "dropdown-item py-2", `data-format` = format, label
+  ))
+  htmltools::div(
+    class = "position-relative",
+    chart,
+    # After the chart, so that it's drawn over it
+    htmltools::div(
+      id = id, class = "dropdown position-absolute", style = "top: 0; right: 10px",
+      htmltools::tags$button(
+        type = "button", class = "btn btn-outline-secondary p-0",
+        class = "d-flex align-items-center justify-content-center",
+        # Of a set size, as the title of the chart is wrapped to clear it, possibly
+        # before the font of the icon has loaded
+        style = "width: 2.5rem; height: 2.5rem",
+        `data-bs-toggle` = "dropdown", `aria-expanded` = "false",
+        `aria-label` = "Letöltés", title = "Letöltés",
+        htmltools::tags$i(class = "bi bi-download", `aria-hidden` = "true")
+      ),
+      htmltools::tags$ul(
+        class = "dropdown-menu dropdown-menu-end",
+        item("png", "Mentés képként (PNG)"),
+        item("jpg", "Mentés képként (JPG)"),
+        item("svg", "Mentés képként (SVG)"),
+        htmltools::tags$li(htmltools::tags$hr(class = "dropdown-divider")),
+        item("xlsx", "Adatok letöltése (XLSX)"),
+        item("csv", "Adatok letöltése (CSV)")
+      )
+    )
+  )
 }
 
 # The filters and the chart of the column `var` of RawData in "Eredmények", with
@@ -738,6 +823,7 @@ category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
   filter_ids <- paste0(id, c("_classification_filter", "_main_group_filter",
                              "_subgroup_filter", "_type_filter"))
   var_id <- paste0(id, "_var_choice")
+  download_id <- paste0(id, "_download")
   
   # The filters pick the plotted rows by their keys, as the two share a crosstalk
   # group. The chart only gets the columns it plots, since echarts4r embeds every
@@ -934,17 +1020,7 @@ category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
                   return value.toLocaleString('hu-HU', { maximumFractionDigits: 20 });
                 }
               ")
-             )) |>
-    e_toolbox() |>
-    e_toolbox_feature(
-      feature = "saveAsImage",
-      title = "Mentés képként (PNG)",
-      option = list(
-        type = "png",
-        pixelRatio = 2
-      )) |>
-    add_data_download(unit, choice_id = if (length(var) > 1) var_id,
-                      download_axis_name = download_axis_name)
+             ))
   
   # For screen readers, the chart is an image, described by its title, its axes and
   # the values shown, formatted as in the tooltip. (ECharts' own description, with
@@ -1179,6 +1255,7 @@ category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
         var main = document.getElementById(data.mainId);
         // The subgroup dropdown or, in stack mode, the radio buttons of the type
         var second = document.getElementById(data.secondId);
+        var download = document.getElementById(data.downloadId);
         // The height of the chart, and the room above and below the plot without
         // the title and with a legend of one line
         var option = chart.getOption(), height = el.clientHeight;
@@ -1224,8 +1301,10 @@ category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
             // Smaller on phones, where the title takes several lines anyway
             var fontSize = el.clientWidth < 500 ? 14 : 18, lineHeight = fontSize + 6;
             context.font = 'bold ' + fontSize + 'px ' + option.textStyle.fontFamily;
-            // Clear of the toolbox (three buttons) in the top right corner
-            var lines = wrap(data.title + ': ' + end, el.clientWidth - 120);
+            // Clear of the download button in the top right corner, by as much as
+            // the title is from the left edge
+            var right = download.getBoundingClientRect().left - el.getBoundingClientRect().left;
+            var lines = wrap(data.title + ': ' + end, right - 20);
             titleRoom = lines.length * lineHeight;
             options.title = {
               id: 'category', text: lines.join('\\n'), left: 10, top: 5,
@@ -1249,13 +1328,18 @@ category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
       }
     ", data = list(
       title = title, mainId = filter_ids[2],
-      secondId = filter_ids[if (stack) 4 else 3],
+      secondId = filter_ids[if (stack) 4 else 3], downloadId = download_id,
       ends = if (!is.null(title)) {
         lapply(split(setNames(ends$end, ends$second), ends$main), as.list)
       }
     ))
   
-  htmltools::tagList(filters, chart)
+  htmltools::tagList(
+    filters,
+    add_download_menu(chart, unit, id = download_id,
+                      choice_id = if (length(var) > 1) var_id,
+                      download_axis_name = download_axis_name)
+  )
 }
 ```
 
