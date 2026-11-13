@@ -1152,9 +1152,9 @@ category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
       ", data = list(group = group, series = as.list(ids)))
   }
   
+  # The end of the title for each choice of the main group dropdown and of the
+  # subgroup dropdown or, in stack mode, of the type
   if (!is.null(title)) {
-    # The end of the title for each choice of the main group dropdown and of the
-    # subgroup dropdown or, in stack mode, of the type
     name_of <- \(label) RawData$name[match(label, RawData$nameLabel)]
     ends <- if (stack) {
       unique(paths[, .(main, second = as.character(typeLabel))])[, end := fifelse(
@@ -1166,67 +1166,94 @@ category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
         paste0(name_of(main), ", ", name_of(second))
       )]
     }
-    
-    chart <- chart |>
-      htmlwidgets::onRender("
-        function(el, x, data) {
-          var chart = echarts.getInstanceByDom(el);
-          var main = document.getElementById(data.mainId);
-          // The subgroup dropdown or, in stack mode, the radio buttons of the type
-          var second = document.getElementById(data.secondId);
-          // The height of the chart and the room above the plot without the title
-          var option = chart.getOption();
-          var height = el.clientHeight, gridTop = option.grid[0].top;
-          var context = document.createElement('canvas').getContext('2d');
+  }
+  
+  # The title, if any, with room for it above the plot, and room for the legend
+  # below it: ECharts puts the legend at the bottom, and wraps it into more lines
+  # when the chart is too narrow for one (as on phones), but only leaves room for
+  # one, so the others would cover the horizontal axis
+  chart <- chart |>
+    htmlwidgets::onRender("
+      function(el, x, data) {
+        var chart = echarts.getInstanceByDom(el);
+        var main = document.getElementById(data.mainId);
+        // The subgroup dropdown or, in stack mode, the radio buttons of the type
+        var second = document.getElementById(data.secondId);
+        // The height of the chart, and the room above and below the plot without
+        // the title and with a legend of one line
+        var option = chart.getOption(), height = el.clientHeight;
+        var gridTop = option.grid[0].top, gridBottom = option.grid[0].bottom;
+        var context = document.createElement('canvas').getContext('2d');
 
-          // ECharts could wrap the title too, but wouldn't tell into how many
-          // lines, which decides how much room the title needs
-          function wrap(text, width) {
-            return text.split(' ').reduce(function(lines, word) {
-              var last = lines[lines.length - 1];
-              if (last && context.measureText(last + ' ' + word).width <= width) {
-                lines[lines.length - 1] = last + ' ' + word;
-              } else {
-                lines.push(word);
-              }
-              return lines;
-            }, []);
+        // ECharts could wrap the title too, but wouldn't tell into how many
+        // lines, which decides how much room the title needs
+        function wrap(text, width) {
+          return text.split(' ').reduce(function(lines, word) {
+            var last = lines[lines.length - 1];
+            if (last && context.measureText(last + ' ' + word).width <= width) {
+              lines[lines.length - 1] = last + ' ' + word;
+            } else {
+              lines.push(word);
+            }
+            return lines;
+          }, []);
+        }
+
+        // How much higher the legend is than its first line (its items are all of
+        // the same height)
+        function legendExtra() {
+          var model = chart.getModel().getComponent('legend');
+          var view = model && chart.getViewOfComponentModel(model);
+          var items = view && view.getContentGroup(), first = items && items.childAt(0);
+          return first ?
+            Math.round(items.getBoundingRect().height - first.getBoundingRect().height) : 0;
+        }
+
+        function update() {
+          // ECharts lays out the legend for the width it has, which htmlwidgets
+          // may not have updated yet when the window was resized
+          if (chart.getWidth() !== el.clientWidth) {
+            chart.resize({ width: el.clientWidth, height: el.clientHeight });
           }
-
-          function update() {
-            var end = (data.ends[main.value] || {})[second.tagName === 'SELECT' ?
-              second.value : second.querySelector('input:checked').value];
-            // The dropdowns aren't filled yet
-            if (end === undefined) return;
+          var legendRoom = legendExtra(), titleRoom = 0;
+          var options = { grid: { bottom: gridBottom + legendRoom } };
+          var end = data.title && (data.ends[main.value] || {})[second.tagName === 'SELECT' ?
+            second.value : second.querySelector('input:checked').value];
+          // Unless the chart has no title, or the dropdowns aren't filled yet
+          if (end) {
             // Smaller on phones, where the title takes several lines anyway
             var fontSize = el.clientWidth < 500 ? 14 : 18, lineHeight = fontSize + 6;
             context.font = 'bold ' + fontSize + 'px ' + option.textStyle.fontFamily;
             // Clear of the toolbox (three buttons) in the top right corner
             var lines = wrap(data.title + ': ' + end, el.clientWidth - 120);
-            chart.setOption({
-              title: {
-                id: 'category', text: lines.join('\\n'), left: 10, top: 5,
-                textStyle: { fontSize: fontSize, fontWeight: 'bold', lineHeight: lineHeight }
-              },
-              grid: { top: gridTop + lines.length * lineHeight }
-            });
-            // The chart grows by the title, so that the plot keeps its size. (The
-            // size is given explicitly, as ECharts would otherwise keep using the
-            // one htmlwidgets last gave it when the window was resized)
-            el.style.height = height + lines.length * lineHeight + 'px';
-            chart.resize({ width: el.clientWidth, height: el.clientHeight });
+            titleRoom = lines.length * lineHeight;
+            options.title = {
+              id: 'category', text: lines.join('\\n'), left: 10, top: 5,
+              textStyle: { fontSize: fontSize, fontWeight: 'bold', lineHeight: lineHeight }
+            };
+            options.grid.top = gridTop + titleRoom;
           }
-
-          main.addEventListener('change', update);
-          second.addEventListener('change', update);
-          window.addEventListener('resize', update);
+          chart.setOption(options);
+          // The chart grows by the room for the two, so that the plot keeps its
+          // size. (The size is given explicitly, as ECharts would otherwise keep
+          // using the one htmlwidgets last gave it when the window was resized)
+          el.style.height = height + titleRoom + legendRoom + 'px';
+          chart.resize({ width: el.clientWidth, height: el.clientHeight });
         }
-      ", data = list(
-        title = title, mainId = filter_ids[2],
-        secondId = filter_ids[if (stack) 4 else 3],
-        ends = lapply(split(setNames(ends$end, ends$second), ends$main), as.list)
-      ))
-  }
+
+        main.addEventListener('change', update);
+        second.addEventListener('change', update);
+        window.addEventListener('resize', update);
+        // The legend needs its room even before the dropdowns are filled
+        update();
+      }
+    ", data = list(
+      title = title, mainId = filter_ids[2],
+      secondId = filter_ids[if (stack) 4 else 3],
+      ends = if (!is.null(title)) {
+        lapply(split(setNames(ends$end, ends$second), ends$main), as.list)
+      }
+    ))
   
   htmltools::tagList(filters, chart)
 }
