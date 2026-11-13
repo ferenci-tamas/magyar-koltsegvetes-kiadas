@@ -476,9 +476,11 @@ filter_radio_dependent <- function(id, label, sharedData, group, parent_id,
 # legend, headed by its name and `unit`. The file is named after the title of the
 # chart and, if the plotted column is chosen with the radio buttons `choice_id`,
 # the chosen one, and so is the PNG of the toolbox's saveAsImage button, if it has
-# one. The Excel file is put together here (as a zip of a few XML files), so that
-# the page needs no library for it
-add_data_download <- function(chart, unit, choice_id = NULL) {
+# one. With `download_axis_name = TRUE`, both files start with a line of the name
+# of the y axis, as shown (in one line). The Excel file is put together here (as a
+# zip of a few XML files), so that the page needs no library for it
+add_data_download <- function(chart, unit, choice_id = NULL,
+                              download_axis_name = FALSE) {
   htmlwidgets::onRender(chart, r"-(
                         function(el, x, data) {
                         var chart = echarts.getInstanceByDom(el);
@@ -514,6 +516,14 @@ add_data_download <- function(chart, unit, choice_id = NULL) {
                         }));
                         }
                         
+                        // The name of the y axis, in one line, if the files are to start with it
+                        // (read at the click, as it changes with the plotted column)
+                        function caption() {
+                        if (data.downloadAxisName) {
+                        return chart.getModel().getComponent('yAxis').get('name').replace(/\n/g, ' ');
+                        }
+                        }
+                        
                         // With 15 significant digits, as R writes numbers, which drops the noise of
                         // floating-point arithmetic (as in 0.30000000000000004)
                         function number(value) {
@@ -521,9 +531,10 @@ add_data_download <- function(chart, unit, choice_id = NULL) {
                         }
                         
                         // Semicolons between the columns and decimal commas, as Excel expects them
-                        // with Hungarian regional settings
-                        function csv(rows) {
-                        var text = rows.map(function(row) {
+                        // with Hungarian regional settings. `caption`, if any, is a line before the
+                        // rows
+                        function csv(rows, caption) {
+                        var text = (caption ? [[caption]] : []).concat(rows).map(function(row) {
                         return row.map(function(cell) {
                         if (cell === undefined) return '';
                         if (typeof cell === 'number') return number(cell).replace('.', ',');
@@ -534,13 +545,15 @@ add_data_download <- function(chart, unit, choice_id = NULL) {
                         return new Blob(['\ufeff' + text + '\r\n'], { type: 'text/csv;charset=utf-8' });
                         }
                         
-                        function xlsx(rows) {
+                        // `caption`, if any, is a row before the rows, in one cell, which spills over
+                        // the empty ones next to it, so the columns aren't widened for it
+                        function xlsx(rows, caption) {
                         // The name of the j-th column (from 0): A to Z, then AA, AB...
                         function column(j) {
                         return (j >= 26 ? column(Math.floor(j / 26) - 1) : '') +
                         String.fromCharCode(65 + j % 26);
                         }
-                        var sheetData = rows.map(function(row, i) {
+                        var sheetData = (caption ? [[caption]] : []).concat(rows).map(function(row, i) {
                         return '<row r="' + (i + 1) + '">' + row.map(function(cell, j) {
                         var ref = ' r="' + column(j) + (i + 1) + '"';
                         if (cell === undefined) return '';
@@ -666,14 +679,14 @@ add_data_download <- function(chart, unit, choice_id = NULL) {
                         show: true,
                         title: 'Adatok letöltése (CSV)',
                         icon: 'path://M11.5,2v56H51V14.8L38.4,2H11.5z M38.4,2.2v12.7H51 M19,27H43 M19,37H43 M19,47H43',
-                        onclick: function() { save(csv(table()), 'csv'); }
+                        onclick: function() { save(csv(table(), caption()), 'csv'); }
                         },
                         // A spreadsheet
                         myDataXlsx: {
                         show: true,
                         title: 'Adatok letöltése (XLSX)',
                         icon: 'path://M4,8H54V52H4Z M4,22.7H54 M4,37.3H54 M21,8V52 M37.5,8V52',
-                        onclick: function() { save(xlsx(table()), 'xlsx'); }
+                        onclick: function() { save(xlsx(table(), caption()), 'xlsx'); }
                         }
                         }
                         }
@@ -695,7 +708,8 @@ add_data_download <- function(chart, unit, choice_id = NULL) {
                         });
                         }
                         }
-  )-", data = list(unit = unit, choiceId = choice_id))
+  )-", data = list(unit = unit, choiceId = choice_id,
+                   downloadAxisName = download_axis_name))
 }
 
 # The filters and the chart of the column `var` of RawData in "Eredmények", with
@@ -712,10 +726,13 @@ add_data_download <- function(chart, unit, choice_id = NULL) {
 # "Összesen") and the type, and the tooltip only shows the hovered area. The radio
 # buttons for `var` only appear when a main group is chosen, as the columns after
 # the first may be relative to it (like propParent): for "Összesen", the chart
-# plots the first column. Each call has its own crosstalk group and element ids
-# (made from `id`), so its controls only affect its own chart
+# plots the first column. With `download_axis_name = TRUE`, the downloadable CSV
+# and Excel files start with a line of the name of the y axis, which tells what the
+# values are (e.g. which column is plotted). Each call has its own crosstalk group
+# and element ids (made from `id`), so its controls only affect its own chart
 category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
-                           stack = FALSE, id = paste0(var[[1]], if (stack) "_stack")) {
+                           stack = FALSE, download_axis_name = FALSE,
+                           id = paste0(var[[1]], if (stack) "_stack")) {
   axis_name <- rep_len(axis_name, length(var))
   group <- paste0("category_", id)
   filter_ids <- paste0(id, c("_classification_filter", "_main_group_filter",
@@ -926,7 +943,8 @@ category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
         type = "png",
         pixelRatio = 2
       )) |>
-    add_data_download(unit, choice_id = if (length(var) > 1) var_id)
+    add_data_download(unit, choice_id = if (length(var) > 1) var_id,
+                      download_axis_name = download_axis_name)
   
   # For screen readers, the chart is an image, described by its title, its axes and
   # the values shown, formatted as in the tooltip. (ECharts' own description, with
@@ -1332,7 +1350,8 @@ category_chart(
                 "Kiadás 2025-ös Ft-ban [Mrd Ft]\n(fogyasztói árindex alapján)"),
   unit = "Mrd Ft",
   var_label = "Az összegek évek közti átváltásának alapja:",
-  title = "A magyar költségvetés kiadásai reálértékben"
+  title = "A magyar költségvetés kiadásai reálértékben",
+  download_axis_name = TRUE
 )
 ```
 
