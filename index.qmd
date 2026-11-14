@@ -1245,7 +1245,9 @@ category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
               color[name] = palette[i % palette.length];
             });
             chart.setOption({
-              legend: { data: legend },
+              // Stacked, in the order of the areas from the top of the stack down
+              // (though coloured from the bottom up)
+              legend: { data: option.series[0].stack ? legend.slice().reverse() : legend },
               xAxis: {
                 data: years.slice(years.indexOf(covered[0]),
                                   years.indexOf(covered[covered.length - 1]) + 1)
