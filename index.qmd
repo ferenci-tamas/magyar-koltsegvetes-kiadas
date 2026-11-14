@@ -1040,7 +1040,12 @@ category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
   # The decimals of the values there: the ratios of relative mode need two
   fraction_digits <- if (relative) 2L else 1L
   chart <- chart |>
-    e_tooltip(trigger = "axis",
+    # On phones, the tooltip is often wider than the room beside the finger, or
+    # even than the chart (with the long names of the categories), and ECharts
+    # would then push it partly off the screen. So it's kept within the chart, and
+    # its lines wrap if it's still too wide (but not within a value and its unit).
+    # The tooltip of the legend, with the names cut short there, does the same
+    e_tooltip(trigger = "axis", confine = TRUE, extraCssText = "white-space: normal;",
               formatter = htmlwidgets::JS(sprintf("
                 function(params) {
                   return params[0].name + '<br>' +
@@ -1056,7 +1061,7 @@ category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
                       });
 
                       return p.marker + ' ' + p.seriesName +
-                        ': <b>' + value + '%s</b>';
+                        ': <b style=\"white-space: nowrap\">' + value + '%s</b>';
                     }).join('<br>');
                 }", fraction_digits, unit_suffix))) |>
     e_title(subtext = "Ferenci Tamás (medstat.hu)", bottom = 0, right = 10,
@@ -1072,6 +1077,11 @@ category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
                 }
               ")
              ))
+  # ECharts shows the tooltip where it last was (at first, the middle of the chart)
+  # before moving it into place, so it may stick out of the chart for a moment,
+  # which is enough for phones to widen the page, and leave it widened. The chart
+  # clips it, which hides nothing, as the tooltip always ends up within the chart
+  chart <- htmlwidgets::onRender(chart, "function(el) { el.style.overflow = 'hidden'; }")
   
   # For screen readers, the chart is an image, described by its title, its axes and
   # the values shown, formatted as in the tooltip. (ECharts' own description, with
