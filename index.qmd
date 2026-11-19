@@ -1066,7 +1066,13 @@ category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
                 }", fraction_digits, unit_suffix))) |>
     e_title(subtext = "Ferenci Tamás (medstat.hu)", bottom = 0, right = 10,
             sublink = "https://www.medstat.hu/", subtarget = "blank") |>
-    e_x_axis(name = "Év") |>
+    # The first and last years are always labelled, not only when ECharts' step
+    # between labels happens to land on them. A label that would collide with
+    # them is hidden instead (with hideOverlap, also one that would come within a
+    # few pixels)
+    e_x_axis(name = "Év",
+             axisLabel = list(showMinLabel = TRUE, showMaxLabel = TRUE,
+                              hideOverlap = TRUE)) |>
     e_y_axis(name = axis_name[[1]],
              axisLabel = list(
                # toLocaleString keeps only 3 decimals by default, too few for the
