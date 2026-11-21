@@ -39,8 +39,8 @@ book:
   description: "Mennyit költ a magyar állam egészségügyre, oktatásra, nyugdíjra? Sokat? Keveset? Többet, mint régen? Ez az oldal az ilyen kérdések vizsgálatához ad segítséget."
   chapters:
     - index.qmd
-
-sidebar: false
+    - kiadas.qmd
+    - fuggelek.qmd
 
 format:
   html:

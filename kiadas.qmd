@@ -1,0 +1,1929 @@
+```{r}
+#| results: hide
+#| message: false
+
+library(data.table)
+library(echarts4r)
+
+# aggregates.R
+source("aggregates.R", local = knitr::knit_global())
+
+# data_prepare.R
+RawData <- readRDS("RawData.rds")
+
+# Where each row of RawData sits in the Hungarian and in the COFOG hierarchy:
+# under its main group (huncodeParent / cofogParent), as "Összesen" if it's the main group
+# itself. Rows present in both (e.g. Egészségügy: F05 = GF07) appear in both
+CategoryPaths <- rbind(
+  RawData[, .(classification = "Magyar", node = huncode, parent = huncodeParent,
+              nameLabel, key = .I)],
+  RawData[, .(classification = "Nemzetközi (COFOG)", node = cofog,
+              parent = cofogParent, nameLabel, key = .I)]
+)[!is.na(node)]
+CategoryPaths[, `:=`(
+  main = as.character(nameLabel[node == parent][1]),
+  sub = fifelse(node == parent, "Összesen", as.character(nameLabel))
+), by = .(classification, parent)]
+# The dropdowns list the categories in this order
+setorder(CategoryPaths, classification, parent, node)
+
+# Radio buttons with the values `choices`, labelled by its names if it has any
+# (as in shiny::radioButtons). `compact = TRUE` shows the choices as a group of
+# small toggle buttons (stretched to the available width) with a small label and
+# no margin below, for placing it next to other filters; `inline` is then ignored
+radio_buttons <- function(id, label, choices, selected = choices[[1]], inline = FALSE,
+                          compact = FALSE) {
+  labels <- if (is.null(names(choices))) choices else names(choices)
+  radios <- lapply(seq_along(choices), \(i) {
+    input_id <- paste0(id, "_", i)
+    input <- htmltools::tags$input(
+      class = if (compact) "btn-check" else "form-check-input", type = "radio",
+      name = id, id = input_id, value = choices[[i]],
+      checked = if (choices[[i]] == selected) NA
+    )
+    if (compact) {
+      # Bootstrap draws the label right after a .btn-check input as its button
+      htmltools::tagList(input, htmltools::tags$label(
+        class = "btn btn-sm btn-outline-primary", `for` = input_id, labels[[i]]
+      ))
+    } else {
+      htmltools::div(
+        class = "form-check", class = if (inline) "form-check-inline", input,
+        htmltools::tags$label(class = "form-check-label", `for` = input_id, labels[[i]])
+      )
+    }
+  })
+  if (compact) radios <- htmltools::div(class = "btn-group d-flex", radios)
+  
+  htmltools::tags$fieldset(
+    id = id, class = if (!compact) "mb-3",
+    htmltools::tags$legend(
+      class = "form-label", class = if (compact) "small mb-1" else "fs-6", label
+    ),
+    radios
+  )
+}
+
+# crosstalk has no radio-button filter, so this builds one on crosstalk's JS API,
+# with the buttons of radio_buttons() (which describes `inline` and `compact`)
+filter_radio <- function(id, label, sharedData, group, selected = NULL, inline = FALSE,
+                         compact = FALSE) {
+  df <- sharedData$origData()
+  values <- if (inherits(group, "formula")) {
+    eval(group[[2]], df, environment(group))
+  } else group
+  lvls <- if (is.factor(values)) levels(droplevels(values)) else sort(unique(values))
+  lvls <- as.character(lvls)
+  if (is.null(selected)) selected <- lvls[1]
+  keys <- as.character(sharedData$key())
+  map <- setNames(lapply(lvls, \(l) keys[which(values == l)]), lvls)
+  
+  # Set the filter only after the widgets have rendered: echarts4r reacts to
+  # filter changes, but ignores a filter that was set before it existed
+  js <- sprintf(
+    "HTMLWidgets.addPostRenderHandler(function() {
+      var map = %s;
+      var handle = new crosstalk.FilterHandle(%s);
+      var inputs = document.getElementById(%s).querySelectorAll('input');
+      function update() {
+        inputs.forEach(function(el) { if (el.checked) handle.set(map[el.value]); });
+      }
+      inputs.forEach(function(el) { el.addEventListener('change', update); });
+      update();
+    });",
+    jsonlite::toJSON(map),
+    jsonlite::toJSON(sharedData$groupName(), auto_unbox = TRUE),
+    jsonlite::toJSON(id, auto_unbox = TRUE)
+  )
+  
+  htmltools::attachDependencies(
+    htmltools::tagList(
+      radio_buttons(id, label, lvls, selected, inline = inline, compact = compact),
+      htmltools::tags$script(htmltools::HTML(js))
+    ),
+    crosstalk::crosstalkLibs()
+  )
+}
+
+# crosstalk's filter_select can't depend on other filters, so this is a
+# single-choice dropdown (without an "(All)" option) that only offers the values
+# of `group` occurring in the rows that match the current choice of each parent
+# filter: the filter_radio or filter_select_dependent elements in `parent_id`,
+# with their grouping variables in `parent_group` (a list if there are several).
+# Values are offered in their order of appearance, and a choice keeps only its
+# rows within the parents' choices, so a key may occur in several rows (e.g.
+# once under each classification). `compact = TRUE` makes the dropdown and its
+# label smaller, without margin below, as in filter_radio
+filter_select_dependent <- function(id, label, sharedData, group, parent_id,
+                                    parent_group, selected = NULL, compact = FALSE) {
+  df <- sharedData$origData()
+  eval_group <- \(g) {
+    as.character(if (inherits(g, "formula")) eval(g[[2]], df, environment(g)) else g)
+  }
+  if (!is.list(parent_group)) parent_group <- list(parent_group)
+  values <- eval_group(group)
+  keys <- as.character(sharedData$key())
+  # Joined the same way as the parents' current choices in the JavaScript below
+  parents <- do.call(paste, c(lapply(parent_group, eval_group), sep = "\u001f"))
+  rows <- split(seq_along(values), parents)
+  choices <- lapply(rows, \(i) unique(values[i]))
+  map <- lapply(rows, \(i) split(keys[i], values[i]))
+  
+  js <- sprintf(
+    "HTMLWidgets.addPostRenderHandler(function() {
+      var choices = %s, map = %s, selected = %s;
+      var select = document.getElementById(%s);
+      var parents = %s.map(function(id) { return document.getElementById(id); });
+      var handle = new crosstalk.FilterHandle(%s);
+
+      function parentKey() {
+        return parents.map(function(el) {
+          return el.tagName === 'SELECT' ? el.value :
+            el.querySelector('input:checked').value;
+        }).join('\\u001f');
+      }
+
+      function update() {
+        var offered = choices[parentKey()] || [];
+        // Keep the current choice if it's still offered, else fall back to `selected`
+        var value = [select.value, selected]
+          .find(function(v) { return offered.includes(v); }) || offered[0];
+        select.replaceChildren.apply(select, offered.map(function(v) {
+          return new Option(v, v, false, v === value);
+        }));
+        // Also updates the filters that depend on this one
+        select.dispatchEvent(new Event('change'));
+      }
+
+      select.addEventListener('change', function() {
+        handle.set((map[parentKey()] || {})[select.value] || []);
+      });
+      parents.forEach(function(el) { el.addEventListener('change', update); });
+      update();
+    });",
+    jsonlite::toJSON(choices),
+    jsonlite::toJSON(map),
+    jsonlite::toJSON(selected, auto_unbox = TRUE, null = "null"),
+    jsonlite::toJSON(id, auto_unbox = TRUE),
+    jsonlite::toJSON(parent_id),
+    jsonlite::toJSON(sharedData$groupName(), auto_unbox = TRUE)
+  )
+  
+  htmltools::attachDependencies(
+    htmltools::tagList(
+      htmltools::div(
+        class = if (!compact) "mb-3",
+        htmltools::tags$label(
+          class = "form-label", class = if (compact) "small mb-1", `for` = id, label
+        ),
+        htmltools::tags$select(
+          id = id, class = "form-select", class = if (compact) "form-select-sm"
+        )
+      ),
+      htmltools::tags$script(htmltools::HTML(js))
+    ),
+    crosstalk::crosstalkLibs()
+  )
+}
+
+# filter_radio with choices that depend on other filters, the way the choices of
+# filter_select_dependent do (which describes `parent_id`, `parent_group` and how
+# the choice is kept when they change): it only offers the values of `group`
+# occurring in the rows that match the parents' current choices, in the order
+# filter_radio would offer them, and shows its buttons even if it offers a single
+# value. `inline` and `compact` are as in radio_buttons()
+filter_radio_dependent <- function(id, label, sharedData, group, parent_id,
+                                   parent_group, selected = NULL, inline = FALSE,
+                                   compact = FALSE) {
+  df <- sharedData$origData()
+  eval_group <- \(g) if (inherits(g, "formula")) eval(g[[2]], df, environment(g)) else g
+  if (!is.list(parent_group)) parent_group <- list(parent_group)
+  values <- eval_group(group)
+  lvls <- as.character(
+    if (is.factor(values)) levels(droplevels(values)) else sort(unique(values))
+  )
+  values <- as.character(values)
+  keys <- as.character(sharedData$key())
+  # Joined the same way as the parents' current choices in the JavaScript below
+  parents <- do.call(paste, c(lapply(parent_group, \(g) as.character(eval_group(g))),
+                              sep = "\u001f"))
+  rows <- split(seq_along(values), parents)
+  fieldsets <- lapply(rows, \(i) {
+    offered <- intersect(lvls, values[i])
+    radio_buttons(id, label, offered,
+                  selected = if (isTRUE(selected %in% offered)) selected else offered[[1]],
+                  inline = inline, compact = compact)
+  })
+  map <- lapply(rows, \(i) split(keys[i], values[i]))
+  
+  js <- sprintf(
+    "HTMLWidgets.addPostRenderHandler(function() {
+      var contents = %s, map = %s, selected = %s;
+      var fieldset = document.getElementById(%s);
+      var parents = %s.map(function(id) { return document.getElementById(id); });
+      var handle = new crosstalk.FilterHandle(%s);
+
+      function parentKey() {
+        return parents.map(function(el) {
+          return el.tagName === 'SELECT' ? el.value :
+            el.querySelector('input:checked').value;
+        }).join('\\u001f');
+      }
+
+      function value() {
+        var checked = fieldset.querySelector('input:checked');
+        return checked && checked.value;
+      }
+
+      function update() {
+        var current = value();
+        fieldset.innerHTML = contents[parentKey()] || '';
+        var inputs = Array.from(fieldset.querySelectorAll('input'));
+        var offered = inputs.map(function(el) { return el.value; });
+        // Keep the current choice if it's still offered, else fall back to `selected`
+        var choice = [current, selected]
+          .find(function(v) { return offered.includes(v); }) || offered[0];
+        inputs.forEach(function(el) { el.checked = el.value === choice; });
+        // Also updates the filters that depend on this one
+        fieldset.dispatchEvent(new Event('change'));
+      }
+
+      fieldset.addEventListener('change', function() {
+        handle.set((map[parentKey()] || {})[value()] || []);
+      });
+      parents.forEach(function(el) { el.addEventListener('change', update); });
+      update();
+    });",
+    # What goes inside the fieldset (the legend and the buttons) for each choice of
+    # the parents
+    jsonlite::toJSON(lapply(fieldsets, \(f) as.character(htmltools::tagList(f$children))),
+                     auto_unbox = TRUE),
+    jsonlite::toJSON(map),
+    jsonlite::toJSON(selected, auto_unbox = TRUE, null = "null"),
+    jsonlite::toJSON(id, auto_unbox = TRUE),
+    jsonlite::toJSON(parent_id),
+    jsonlite::toJSON(sharedData$groupName(), auto_unbox = TRUE)
+  )
+  
+  htmltools::attachDependencies(
+    htmltools::tagList(
+      # The buttons for the parents' first combination of values, until the
+      # JavaScript reads their current choices
+      fieldsets[[1]],
+      htmltools::tags$script(htmltools::HTML(js))
+    ),
+    crosstalk::crosstalkLibs()
+  )
+}
+
+# Puts `chart` in a box with a download button (a dropdown with the id `id`) over
+# its top right corner, whose menu saves the chart as a PNG, a JPG or an SVG, or
+# the data it plots, as shown, in an Excel or a CSV file: a column of the x values,
+# then the plotted column of each series left by the filters and the legend, headed
+# by its name and `unit` (unless it's ""). A heatmap has a column for each of its
+# rows instead, of the values its cells are coloured by, headed by the row's name in
+# `row_names` (by its value on the y axis). The images show the whole legend, even
+# where the chart scrolls it, and are taller for it. The files are named after the
+# title of the chart and, if the plotted column is chosen with the radio buttons
+# `choice_id`, the chosen one. With `download_axis_name = TRUE`, both data files
+# start with a line of the name of the y axis, as shown (in one line). The Excel
+# file is put together here (as a zip of a few XML files), so that the page needs
+# no library for it. As the result is no longer a widget, this comes after
+# everything else done to the chart
+add_download_menu <- function(chart, unit, id, choice_id = NULL,
+                              download_axis_name = FALSE, row_names = NULL) {
+  chart <- htmlwidgets::onRender(chart, r"-(
+                        function(el, x, data) {
+                        var chart = echarts.getInstanceByDom(el);
+                        
+                        // The rows of the table, the header first, with the x values in their order
+                        // on the axis, and an empty cell (undefined) where a series has no value
+                        function table() {
+                        var model = chart.getModel(), axis = model.getComponent('xAxis');
+                        var header = [axis.get('name')], rows = {}, columnOf = {};
+                        // Skips the series hidden with the legend; those filtered out have no data.
+                        // Series of the same name (in stack mode, the negative and the positive
+                        // parts of a category) share a column, with their values added up. In a
+                        // heatmap, each row has a column, of the values its cells are coloured by
+                        model.eachSeries(function(series) {
+                        var points = series.getData(), heatmap = series.id === 'heatmap';
+                        var y = points.mapDimension(heatmap ? 'value' : 'y');
+                        for (var i = 0; i < points.count(); i++) {
+                        var name = points.getName(i), value = points.get(y, i);
+                        if (isNaN(value)) continue;
+                        var column = heatmap ?
+                        data.rowNames[points.getRawDataItem(i)[points.mapDimension('y')]] : series.name;
+                        var j = columnOf[column] || header.length;
+                        // A year as a number, so that Excel takes it for one
+                        rows[name] = rows[name] || [isNaN(name) ? name : Number(name)];
+                        rows[name][j] = (rows[name][j] || 0) + value;
+                        if (j === header.length) {
+                        columnOf[column] = j;
+                        header.push(column + (data.unit ? ' [' + data.unit + ']' : ''));
+                        }
+                        }
+                        });
+                        var order = axis.get('data');
+                        return [header].concat(Object.keys(rows)
+                        .sort(function(a, b) { return order.indexOf(a) - order.indexOf(b); })
+                        .map(function(name) {
+                        return header.map(function(_, j) { return rows[name][j]; });
+                        }));
+                        }
+                        
+                        // The name of the y axis, in one line, if the files are to start with it
+                        // (read at the click, as it changes with the plotted column)
+                        function caption() {
+                        if (data.downloadAxisName) {
+                        return chart.getModel().getComponent('yAxis').get('name').replace(/\n/g, ' ');
+                        }
+                        }
+                        
+                        // With 15 significant digits, as R writes numbers, which drops the noise of
+                        // floating-point arithmetic (as in 0.30000000000000004)
+                        function number(value) {
+                        return String(Number(value.toPrecision(15)));
+                        }
+                        
+                        // Semicolons between the columns and decimal commas, as Excel expects them
+                        // with Hungarian regional settings. `caption`, if any, is a line before the
+                        // rows
+                        function csv(rows, caption) {
+                        var text = (caption ? [[caption]] : []).concat(rows).map(function(row) {
+                        return row.map(function(cell) {
+                        if (cell === undefined) return '';
+                        if (typeof cell === 'number') return number(cell).replace('.', ',');
+                        return /[";\r\n]/.test(cell) ? '"' + cell.replace(/"/g, '""') + '"' : cell;
+                        }).join(';');
+                        }).join('\r\n');
+                        // The byte order mark tells Excel that the file is in UTF-8
+                        return new Blob(['\ufeff' + text + '\r\n'], { type: 'text/csv;charset=utf-8' });
+                        }
+                        
+                        // `caption`, if any, is a row before the rows, in one cell, which spills over
+                        // the empty ones next to it, so the columns aren't widened for it
+                        function xlsx(rows, caption) {
+                        // The name of the j-th column (from 0): A to Z, then AA, AB...
+                        function column(j) {
+                        return (j >= 26 ? column(Math.floor(j / 26) - 1) : '') +
+                        String.fromCharCode(65 + j % 26);
+                        }
+                        var sheetData = (caption ? [[caption]] : []).concat(rows).map(function(row, i) {
+                        return '<row r="' + (i + 1) + '">' + row.map(function(cell, j) {
+                        var ref = ' r="' + column(j) + (i + 1) + '"';
+                        if (cell === undefined) return '';
+                        if (typeof cell === 'number') return '<c' + ref + '><v>' + number(cell) + '</v></c>';
+                        cell = cell.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                        return '<c' + ref + ' t="inlineStr"><is><t>' + cell + '</t></is></c>';
+                        }).join('') + '</row>';
+                        }).join('');
+                        // Each column wide enough for its header, within limits
+                        var cols = rows[0].map(function(name, j) {
+                        return '<col min="' + (j + 1) + '" max="' + (j + 1) + '" width="' +
+                        Math.min(Math.max(name.length + 2, 10), 50) + '" customWidth="1"/>';
+                        }).join('');
+                        var ns = 'http://schemas.openxmlformats.org/';
+                        var type = 'application/vnd.openxmlformats-';
+                        return zip({
+                        '[Content_Types].xml':
+                        '<Types xmlns="' + ns + 'package/2006/content-types">' +
+                        '<Default Extension="rels" ContentType="' + type + 'package.relationships+xml"/>' +
+                        '<Default Extension="xml" ContentType="application/xml"/>' +
+                        '<Override PartName="/xl/workbook.xml" ContentType="' + type +
+                        'officedocument.spreadsheetml.sheet.main+xml"/>' +
+                        '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="' + type +
+                        'officedocument.spreadsheetml.worksheet+xml"/></Types>',
+                        '_rels/.rels':
+                        '<Relationships xmlns="' + ns + 'package/2006/relationships">' +
+                        '<Relationship Id="rId1" Target="xl/workbook.xml" Type="' + ns +
+                        'officeDocument/2006/relationships/officeDocument"/></Relationships>',
+                        'xl/workbook.xml':
+                        '<workbook xmlns="' + ns + 'spreadsheetml/2006/main" xmlns:r="' + ns +
+                        'officeDocument/2006/relationships"><sheets>' +
+                        '<sheet name="Adatok" sheetId="1" r:id="rId1"/></sheets></workbook>',
+                        'xl/_rels/workbook.xml.rels':
+                        '<Relationships xmlns="' + ns + 'package/2006/relationships">' +
+                        '<Relationship Id="rId1" Target="worksheets/sheet1.xml" Type="' + ns +
+                        'officeDocument/2006/relationships/worksheet"/></Relationships>',
+                        'xl/worksheets/sheet1.xml':
+                        '<worksheet xmlns="' + ns + 'spreadsheetml/2006/main"><cols>' + cols +
+                        '</cols><sheetData>' + sheetData + '</sheetData></worksheet>'
+                        }, type + 'officedocument.spreadsheetml.sheet');
+                        }
+                        
+                        // A zip archive of the XML documents `files` (their contents by name), as a
+                        // Blob of the MIME type `type`, with the files stored uncompressed
+                        function zip(files, type) {
+                        var crcTable = Array.from({ length: 256 }, function(_, c) {
+                        for (var k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+                        return c;
+                        });
+                        // The integers `values`, little-endian, each of the size in bytes in `sizes`
+                        function bytes(values, sizes) {
+                        var view = new DataView(new ArrayBuffer(sizes.reduce(function(a, b) { return a + b; })));
+                        values.reduce(function(at, value, i) {
+                        view[sizes[i] === 2 ? 'setUint16' : 'setUint32'](at, value, true);
+                        return at + sizes[i];
+                        }, 0);
+                        return new Uint8Array(view.buffer);
+                        }
+                        var encoder = new TextEncoder(), local = [], central = [], offset = 0;
+                        Object.keys(files).forEach(function(name) {
+                        var path = encoder.encode(name);
+                        var content = encoder.encode(
+                        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + files[name]
+                        );
+                        var crc = ~content.reduce(function(c, byte) {
+                        return crcTable[(c ^ byte) & 255] ^ (c >>> 8);
+                        }, -1) >>> 0;
+                        // The fields that both headers of the file have, from the version needed
+                        // to extract it (2.0): no flags, no compression, modified on 1980-01-01 at
+                        // 0:00, the CRC-32 and the sizes, the length of the name and of the extra
+                        // field
+                        var common = [20, 0, 0, 0, 33, crc, content.length, content.length, path.length, 0];
+                        var sizes = [2, 2, 2, 2, 2, 4, 4, 4, 2, 2];
+                        local.push(bytes([0x04034b50].concat(common), [4].concat(sizes)), path, content);
+                        // Also with the version that made it and where its local header is
+                        central.push(bytes([0x02014b50, 20].concat(common, [0, 0, 0, 0, offset]),
+                        [4, 2].concat(sizes, [2, 2, 2, 4, 4])), path);
+                        offset += 30 + path.length + content.length;
+                        });
+                        var size = central.reduce(function(total, part) { return total + part.length; }, 0);
+                        var count = Object.keys(files).length;
+                        var end = bytes([0x06054b50, 0, 0, count, count, size, offset, 0],
+                        [4, 2, 2, 2, 2, 4, 4, 2]);
+                        return new Blob(local.concat(central, [end]), { type: type });
+                        }
+                        
+                        // The title of the chart and, if the plotted column is chosen with radio
+                        // buttons, the plotted one (which is checked even while the buttons are
+                        // hidden), without the characters that Windows doesn't allow in file names
+                        function fileName() {
+                        var parts = [];
+                        chart.getModel().eachComponent('title', function(title) {
+                        parts.push(title.get('text'));
+                        });
+                        var choice = data.choiceId && document.getElementById(data.choiceId);
+                        if (choice) {
+                        var input = choice.querySelector('input:checked');
+                        parts.push(choice.querySelector('label[for="' + input.id + '"]').textContent);
+                        }
+                        return (parts.filter(Boolean).join(', ') || 'adatok')
+                        .replace(/\n/g, ' ').replace(/: /g, ' - ').replace(/[\\/:*?"<>|]/g, '-');
+                        }
+                        
+                        // The height of the legend of the chart `c` (of its items)
+                        function legendHeight(c) {
+                        var model = c.getModel().getComponent('legend');
+                        var view = model && c.getViewOfComponentModel(model);
+                        return view ? view.getContentGroup().getBoundingRect().height : 0;
+                        }
+                        
+                        // A copy of the chart as shown, for an image, drawn with ECharts' `renderer`
+                        // ('canvas' or 'svg'), without animation, on the background of the chart or
+                        // else white, as ECharts' own saveAsImage button would. Its legend is shown
+                        // whole, with whole names, as an image can't scroll it or show a name cut short
+                        // on hover, and the copy is taller than the chart by the room that takes
+                        function copyOf(renderer) {
+                        var width = chart.getWidth(), height = chart.getHeight();
+                        // The canvas copy is drawn at the pixel ratio of the images (see bitmap()), not
+                        // the screen's: ECharts would scale a copy with a higher one (as on phones) down
+                        // to theirs, blurring them slightly
+                        var copy = renderer === 'svg' ?
+                        echarts.init(null, null, { renderer: 'svg', ssr: true, width: width, height: height }) :
+                        echarts.init(document.createElement('div'), null,
+                        { width: width, height: height, devicePixelRatio: 2 });
+                        var option = chart.getOption();
+                        option.animation = false;
+                        option.backgroundColor = chart.getModel().get('backgroundColor') || '#fff';
+                        (option.legend || []).forEach(function(legend) {
+                        legend.type = 'plain';
+                        legend.textStyle = Object.assign({}, legend.textStyle, { width: null, overflow: 'none' });
+                        });
+                        copy.setOption(option);
+                        // If a name is too long for a line of the legend (as on phones), the legend
+                        // becomes a column of the names broken into lines as wide as the room beside
+                        // the icon and the 5px gap after it. (Not rows, as ECharts would let the names
+                        // of more lines overlap the row above. Laid out in a chart tall enough not to
+                        // wrap the column into more)
+                        var legendModel = copy.getModel().getComponent('legend');
+                        if (legendModel) {
+                        // The padding of the legend is given as in CSS
+                        var padding = [].concat(legendModel.get('padding'));
+                        var right = padding.length > 1 ? padding[1] : padding[0];
+                        var room = width - right - (padding.length > 3 ? padding[3] : right);
+                        var items = copy.getViewOfComponentModel(legendModel).getContentGroup();
+                        if (items.getBoundingRect().width > room) {
+                        copy.resize({ width: width, height: 10 * height });
+                        copy.setOption({ legend: {
+                        orient: 'vertical',
+                        textStyle: {
+                        width: room - legendModel.get('itemWidth') - 5, overflow: 'break',
+                        // ECharts would set the lines as close as the size of the font, so that the
+                        // accents of a line touch the one above
+                        lineHeight: Math.round(1.4 * (legendModel.get(['textStyle', 'fontSize']) || 12))
+                        }
+                        } });
+                        }
+                        }
+                        var extra = Math.round(legendHeight(copy) - legendHeight(chart));
+                        copy.setOption({ grid: { bottom: option.grid[0].bottom + extra } });
+                        copy.resize({ width: width, height: height + extra });
+                        return copy;
+                        }
+                        
+                        // The chart as shown, as the data URL of a PNG or a JPG (`type` 'png' or
+                        // 'jpeg'), at twice the resolution
+                        function bitmap(type) {
+                        var copy = copyOf('canvas');
+                        var url = copy.getDataURL({ type: type, pixelRatio: 2 });
+                        copy.dispose();
+                        return url;
+                        }
+                        
+                        // The chart as shown, in an SVG file
+                        function svg() {
+                        var copy = copyOf('svg');
+                        var text = copy.renderToSVGString();
+                        copy.dispose();
+                        return new Blob([text], { type: 'image/svg+xml' });
+                        }
+                        
+                        // `file` is a Blob or, for a PNG or a JPG, a data URL
+                        function save(file, extension) {
+                        var link = document.createElement('a');
+                        link.href = file instanceof Blob ? URL.createObjectURL(file) : file;
+                        link.download = fileName() + '.' + extension;
+                        document.body.appendChild(link);
+                        link.click();
+                        link.remove();
+                        // Once the download has surely started
+                        if (file instanceof Blob) {
+                        setTimeout(function() { URL.revokeObjectURL(link.href); }, 60000);
+                        }
+                        }
+                        
+                        // Each item of the menu saves in the format it names
+                        var menu = document.getElementById(data.menuId);
+                        menu.addEventListener('click', function(event) {
+                        var item = event.target.closest('[data-format]');
+                        if (!item) return;
+                        var format = item.dataset.format;
+                        if (format === 'png' || format === 'jpg') {
+                        save(bitmap(format === 'jpg' ? 'jpeg' : 'png'), format);
+                        } else if (format === 'svg') {
+                        save(svg(), 'svg');
+                        } else {
+                        save((format === 'csv' ? csv : xlsx)(table(), caption()), format);
+                        }
+                        // The menu closes, so keyboard users are taken back to the button
+                        menu.querySelector('[data-bs-toggle]').focus();
+                        });
+                        }
+  )-", data = list(unit = unit, menuId = id, choiceId = choice_id,
+                   downloadAxisName = download_axis_name, rowNames = row_names))
+  
+  item <- \(format, label) htmltools::tags$li(htmltools::tags$button(
+    # Taller than Bootstrap's default, to be easier to tap
+    type = "button", class = "dropdown-item py-2", `data-format` = format, label
+  ))
+  htmltools::div(
+    class = "position-relative",
+    chart,
+    # After the chart, so that it's drawn over it
+    htmltools::div(
+      id = id, class = "dropdown position-absolute", style = "top: 0; right: 10px",
+      htmltools::tags$button(
+        type = "button", class = "btn btn-outline-secondary p-0",
+        class = "d-flex align-items-center justify-content-center",
+        # Of a set size, as the title of the chart is wrapped to clear it, possibly
+        # before the font of the icon has loaded
+        style = "width: 2.5rem; height: 2.5rem",
+        `data-bs-toggle` = "dropdown", `aria-expanded` = "false",
+        `aria-label` = "Letöltés", title = "Letöltés",
+        htmltools::tags$i(class = "bi bi-download", `aria-hidden` = "true")
+      ),
+      htmltools::tags$ul(
+        class = "dropdown-menu dropdown-menu-end",
+        item("png", "Mentés képként (PNG)"),
+        item("jpg", "Mentés képként (JPG)"),
+        item("svg", "Mentés képként (SVG)"),
+        htmltools::tags$li(htmltools::tags$hr(class = "dropdown-divider")),
+        item("xlsx", "Adatok letöltése (XLSX)"),
+        item("csv", "Adatok letöltése (CSV)")
+      )
+    )
+  )
+}
+
+# The filters and the chart of the column `var` of RawData in "Eredmények", with
+# `axis_name` on the y axis and `unit` (unless it's "") after the values in the
+# tooltip. The chart has no title if `title` is NULL, else `title` followed by the
+# name of the chosen main group and, unless it's "Összesen", of the subgroup. If
+# `var` has several columns, the chart plots the one chosen with radio buttons
+# labelled `var_label`, which offer them by their names (the first one by
+# default), and `axis_name` may give a different name for each. With
+# `stack = TRUE`, the chart instead shows what the chosen main group is made of, as
+# the stacked areas of its subgroups (or, for "Összesen", of the main groups), for
+# the type of data chosen with radio buttons in place of the subgroup dropdown,
+# which only offer the types of data that come in the chosen classification. The
+# title then names the main group (unless it's "Összesen") and the type, and the
+# tooltip only shows the hovered area. With a `base_year` (relative mode), the
+# chart shows the same parts, with the same controls, but as lines, each divided
+# by its own value in the base year (and missing if that isn't positive), chosen
+# with a slider, at first `base_year`. The title then also names the base year,
+# and the tooltip only shows the hovered line. With `heatmap = TRUE` as well, the
+# parts are instead the rows of a heatmap, labelled by their codes (and named in
+# full in the legend and the tooltip), with a column for each year, and each cell
+# coloured by its ratio (see add_category_heatmap()). The heights of the rows follow
+# the parts' weights, their shares of the whole's spending in the base year: they're
+# proportional to the square roots of the weights with `row_scale = "sqrt"`, so
+# that the small parts stay readable, or to the weights themselves with "linear".
+# Showing parts (in any mode), the columns of `var` relative to the main group
+# (named ...Parent, like propParent) are only offered when a main group is chosen,
+# not for "Összesen", and the radio buttons are hidden while they offer only one
+# column. With
+# `download_axis_name = TRUE`, the downloadable CSV and Excel files start with a
+# line of the name of the y axis, which tells what the values are (e.g. which
+# column is plotted). Each call has its own crosstalk group and element ids (made
+# from `id`), so its controls only affect its own chart. The helpers below make
+# its parts
+category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
+                           stack = FALSE, base_year = NULL, heatmap = FALSE,
+                           row_scale = c("sqrt", "linear"), download_axis_name = FALSE,
+                           id = paste0(var[[1]], if (stack) "_stack",
+                                       if (!is.null(base_year)) "_relative",
+                                       if (heatmap) "_heatmap",
+                                       if (heatmap && row_scale == "linear") "_linear")) {
+  # Before `id` is first used, as its default reads it
+  row_scale <- match.arg(row_scale)
+  relative <- !is.null(base_year)
+  if (stack && relative) stop("A chart can't be both stacked and relative to a base year")
+  if (heatmap && !relative) stop("A heatmap shows the parts relative to a base year")
+  # The chart shows the parts of a whole, stacked or relative to the base year
+  parts <- stack || relative
+  # Showing parts, the columns of `var` relative to the main group (named
+  # ...Parent, like propParent), which put each part of "Összesen" (a main group)
+  # at 100%, so they're only offered when a main group is chosen
+  parent_var <- if (parts) var[endsWith(var, "Parent")] else character()
+  axis_name <- rep_len(axis_name, length(var))
+  ids <- category_ids(id)
+  data <- category_data(var, ids$group, stack, relative, heatmap)
+  # After the values, in the tooltip and in the description for screen readers: a
+  # space before the unit, but not before a percent sign (or if there's no unit)
+  unit_suffix <- if (unit %in% c("", "%")) unit else paste0(" ", unit)
+  # The decimals of the values there: the ratios of relative mode need two
+  fraction_digits <- if (relative) 2L else 1L
+  # A heatmap labels its rows by the codes of the parts, so the legend, the tooltip,
+  # the description for screen readers and the downloaded data name them by these
+  row_names <- if (heatmap) {
+    with(unique(data$paths[, .(code, nameLabel = as.character(nameLabel))]),
+         as.list(setNames(nameLabel, code)))
+  }
+  # The sizes in a heatmap, in px: the average height of a row, the least height of
+  # the plot, and the height of the colour scale beside it, from its top. The plot
+  # is at least 20px taller than the scale, as the name of the x axis is beside its
+  # bottom
+  sizes <- list(row = 24, plot = 150, scale = 130)
+  
+  chart <- data$shared_data |>
+    # Hovering the legend highlights nothing if the chart had more than
+    # hoverLayerThreshold (by default 3000) elements when last redrawn, as it has
+    # here: the points of all categories, drawn before filtering, are still
+    # fading out
+    e_chart(yearchr, hoverLayerThreshold = 1e6, elementId = ids$chart)
+  chart <- if (heatmap) {
+    add_category_heatmap(chart, var, axis_name, row_names, ids$group, unit_suffix,
+                         fraction_digits, sizes, row_scale)
+  } else {
+    add_category_lines(chart, var, axis_name, unit_suffix, fraction_digits, stack,
+                       relative, data$neg_var)
+  }
+  chart <- chart |>
+    add_chart_frame() |>
+    add_chart_description(
+      if (heatmap) {
+        paste("Hőtérkép, a sorok magassága a kategóriák bázisévi",
+              if (row_scale == "sqrt") "súlyának négyzetgyökével" else "súlyával",
+              "arányos")
+      } else if (stack) "Halmozott területdiagram" else "Vonaldiagram",
+      unit_suffix, fraction_digits, row_names
+    ) |>
+    add_column_choice(ids, var, axis_name, parent_var, parts, heatmap)
+  if (!heatmap) chart <- add_part_lines(chart, data$paths, ids$group, stack, unit)
+  chart <- chart |>
+    add_base_year_slider(ids, var, base_year) |>
+    add_chart_layout(title, ids, data$paths, relative,
+                     row_height = if (heatmap) sizes$row,
+                     min_plot_height = if (heatmap) sizes$plot)
+  
+  htmltools::tagList(
+    category_filters(ids, data$shared_paths, var, var_label, parent_var, parts,
+                     relative),
+    add_download_menu(chart, unit, id = ids$download,
+                      choice_id = if (length(var) > 1) ids$var,
+                      download_axis_name = download_axis_name, row_names = row_names)
+  )
+}
+
+# The ids of the elements of the category_chart() with the id `id`, and the name of
+# its crosstalk group
+category_ids <- function(id) {
+  list(
+    group = paste0("category_", id),
+    classification = paste0(id, "_classification_filter"),
+    main = paste0(id, "_main_group_filter"),
+    sub = paste0(id, "_subgroup_filter"),
+    type = paste0(id, "_type_filter"),
+    var = paste0(id, "_var_choice"),
+    base = paste0(id, "_base_year"),
+    download = paste0(id, "_download"),
+    chart = paste0(id, "_chart")
+  )
+}
+
+# The data of a category_chart() (see there) of the columns `var` of RawData, in
+# the crosstalk group `group`: `shared_paths` for the filters, `shared_data` for
+# the chart and, showing parts (with `stack` or `relative`), the parts, `paths`,
+# and in stack mode the columns of their negative parts, `neg_var`. The filters
+# pick the plotted rows by their keys, as the two share the group. The chart only
+# gets the columns it plots (and in a heatmap the spending, by which its rows are
+# sized), since echarts4r embeds every column in the page
+category_data <- function(var, group, stack = FALSE, relative = FALSE,
+                          heatmap = FALSE) {
+  paths <- neg_var <- NULL
+  if (stack || relative) {
+    # A row of RawData in both classifications (e.g. Egészségügy) is a part of a
+    # different whole in each, so here a key is a row of CategoryPaths, i.e. a row
+    # of RawData in one classification. The main group dropdown picks the whole: a
+    # main group, made up of its subgroups, or "Összesen", made up of the main
+    # groups. Each type of data only appears in the classification it comes in
+    # (the budget's cash-based data in the Hungarian one, Eurostat's accrual-based
+    # data in COFOG), as only there do the parts add up to the whole: the
+    # categories mapped from the other classification leave gaps
+    native <- c(original_plan = "Magyar", actual = "Magyar",
+                actual_cofog = "Nemzetközi (COFOG)")
+    paths <- CategoryPaths[classification == native[RawData$type[key]], .(
+      classification, main = fifelse(sub == "Összesen", "Összesen", main),
+      typeLabel = RawData$typeLabel[key], nameLabel, code = node, row = key, key = .I
+    )]
+    # A series for each part in each classification, in the order of the codes
+    # (stacked in that order). Named by its number, as echarts4r writes the name
+    # into every row
+    paths[, series := paste(classification, nameLabel)]
+    paths[, series := factor(series, levels = unique(series),
+                             labels = seq_along(unique(series)))]
+    shared_paths <- crosstalk::SharedData$new(
+      # "Összesen" first in the dropdown
+      paths[order(main != "Összesen")], key = ~key, group = group
+    )
+    chart_data <- RawData[paths$row, c("yearchr", var), with = FALSE]
+    # A heatmap has a row for each part instead, at its code (unique across the
+    # classifications), which labels the row, and with the spending of the part
+    if (heatmap) {
+      chart_data[, `:=`(code = paths$code, spending = RawData$value[paths$row],
+                        key = paths$key)]
+    } else {
+      chart_data[, `:=`(series = paths$series, key = paths$key)]
+    }
+    # In relative mode, also the line that each row is on: its part, for its type
+    # of data, all of whose values are divided by the one in the base year
+    if (relative) {
+      chart_data[, line := as.integer(interaction(paths$series, paths$typeLabel,
+                                                  drop = TRUE))]
+    }
+    # In the order of the years, as echarts4r puts them on the x axis in the order
+    # they first appear in
+    setorder(chart_data, yearchr)
+    if (stack) {
+      # Each column split into its negative part, in a column of its name with
+      # "_neg" appended, and its positive part, in the column itself, as the two
+      # are stacked separately (see the series below). The negative part is
+      # missing except around the years when it's below 0 (with 0 in the years
+      # just before and after, so that its area tapers off), as a series of zeros
+      # would still draw its line along 0
+      neg_var <- paste0(var, "_neg")
+      chart_data[, (neg_var) := lapply(.SD, \(x) {
+        below <- !is.na(x) & x < 0
+        fcase(below, x,
+              shift(below, fill = FALSE) | shift(below, type = "lead", fill = FALSE), 0)
+      }), by = series, .SDcols = var]
+      chart_data[, (var) := lapply(.SD, pmax, 0), .SDcols = var]
+    }
+    shared_data <- crosstalk::SharedData$new(
+      # A series for each part, except in a heatmap
+      if (heatmap) as.data.frame(chart_data[, !"key"]) else
+        chart_data[, !"key"] |> dplyr::group_by(series),
+      key = as.character(chart_data$key), group = group
+    )
+  } else {
+    # A key is the row number in RawData (the default key of shared_data)
+    shared_paths <- crosstalk::SharedData$new(CategoryPaths, key = ~key, group = group)
+    shared_data <- crosstalk::SharedData$new(
+      RawData[, c("typeLabel", "yearchr", var), with = FALSE] |>
+        dplyr::group_by(typeLabel),
+      group = group
+    )
+  }
+  list(shared_paths = shared_paths, shared_data = shared_data, paths = paths,
+       neg_var = neg_var)
+}
+
+# The filters of a category_chart() (see there) of the columns `var`, with the ids
+# `ids` (see category_ids()), on the rows of `shared_paths` (see category_data()).
+# They share a row on wide screens, but the dropdowns are at least 20rem wide, so
+# on narrower screens they wrap onto rows of their own. (A Bootstrap .row would
+# overflow, as Quarto sets overflow-x: auto on the cell output)
+category_filters <- function(ids, shared_paths, var, var_label, parent_var,
+                             parts = FALSE, relative = FALSE) {
+  htmltools::div(
+    class = "d-flex flex-wrap align-items-end row-gap-2 mb-3",
+    # Not Bootstrap's column-gap-3: Quarto mistakes any class starting with
+    # "column-" for a layout class like column-page, and turns the section into a
+    # grid that confines its content to the narrower body column
+    style = "column-gap: 1rem",
+    htmltools::div(
+      # Full width on phones, where it's alone in its row
+      class = "flex-grow-1 flex-md-grow-0",
+      filter_radio(
+        id = ids$classification,
+        label = "Osztályozás:",
+        sharedData = shared_paths,
+        group = ~classification,
+        selected = "Magyar",
+        compact = TRUE
+      )
+    ),
+    if (parts) htmltools::div(
+      class = "flex-grow-1 flex-md-grow-0",
+      # Before the main group dropdown, so that when the classification changes,
+      # this is updated first, and the dropdown never looks for the main groups of
+      # a type that the new classification doesn't have (which would lose its
+      # choice)
+      filter_radio_dependent(
+        id = ids$type,
+        label = "Adat:",
+        sharedData = shared_paths,
+        group = ~typeLabel,
+        parent_id = ids$classification,
+        parent_group = ~classification,
+        selected = "Tervezet (pénzforgalmi)",
+        compact = TRUE
+      )
+    ),
+    htmltools::div(
+      style = "flex: 1 1 20rem",
+      filter_select_dependent(
+        id = ids$main,
+        label = "Főcsoport:",
+        sharedData = shared_paths,
+        group = ~main,
+        # Showing parts, only the main groups with subgroups of the chosen type
+        parent_id = if (parts) c(ids$classification, ids$type) else ids$classification,
+        parent_group = if (parts) list(~classification, ~typeLabel) else ~classification,
+        selected = if (parts) "Összesen" else "Egészségügy (Magyar: F05, COFOG: GF07)",
+        compact = TRUE
+      )
+    ),
+    if (!parts) htmltools::div(
+      style = "flex: 1 1 20rem",
+      filter_select_dependent(
+        id = ids$sub,
+        label = "Csoport:",
+        sharedData = shared_paths,
+        group = ~sub,
+        parent_id = c(ids$classification, ids$main),
+        parent_group = list(~classification, ~main),
+        selected = "Összesen",
+        compact = TRUE
+      )
+    ),
+    if (length(var) > 1) htmltools::div(
+      class = "flex-grow-1 flex-md-grow-0",
+      # While the buttons offer only one column, as they may at first, for
+      # "Összesen" (see below)
+      hidden = if (length(setdiff(var, parent_var)) < 2) NA,
+      radio_buttons(id = ids$var, label = var_label, choices = var, compact = TRUE)
+    ),
+    if (relative) htmltools::div(
+      style = "flex: 1 1 20rem",
+      htmltools::tags$label(
+        class = "form-label small mb-1", `for` = ids$base, "Bázisév: ",
+        # The chosen year, filled in by the chart (see below), which also gives it
+        # to screen readers as the value of the slider
+        htmltools::tags$span(id = paste0(ids$base, "_value"), `aria-hidden` = "true")
+      ),
+      # Its value is the position of the year among those offered
+      htmltools::tags$input(type = "range", class = "form-range", id = ids$base,
+                            min = 0, max = 0, step = 1, value = 0)
+    )
+  )
+}
+
+# The lines of a category_chart() (see there) of the column var[[1]] (the one
+# plotted at first) or, with `stack = TRUE`, its stacked areas, with
+# `axis_name[[1]]` on the y axis, and a tooltip of the values in the hovered year,
+# followed by `unit_suffix`, with at most `fraction_digits` decimals. In stack
+# mode, the columns `neg_var` have the negative parts (see category_data())
+add_category_lines <- function(chart, var, axis_name, unit_suffix, fraction_digits,
+                               stack = FALSE, relative = FALSE, neg_var = NULL) {
+  chart <- if (stack) {
+    # Each category as two series, of its negative and of its positive parts, each
+    # stacked only on the series of the same sign, so the negative parts go below
+    # 0 and the positive ones above. (ECharts' default would stack a value on the
+    # values of its sign, which draws a category that is negative in a year as an
+    # area diving from its place in the stack to below 0 and back, and stacks a 0
+    # on the negative values if no category before it is positive in that year.)
+    # The series of the negative parts come first, with a symbol only where the
+    # part is below 0, not at the zeros around it. triggerLineEvent: hovering an
+    # area, not only its points, tells which one it is, for the tooltip
+    chart |>
+      e_area_(neg_var[[1]], stack = "total", stackStrategy = "negative",
+              emphasis = list(focus = "series"), triggerLineEvent = TRUE,
+              symbolSize = htmlwidgets::JS("
+                function(value, params) {
+                  return value[params.dimensionNames[params.encode.y[0]]] < 0 ? 4 : 0;
+                }
+              ")) |>
+      e_area_(var[[1]], stack = "total", stackStrategy = "positive",
+              emphasis = list(focus = "series"), triggerLineEvent = TRUE)
+  } else {
+    # In relative mode, as above, hovering a line, not only its points, tells which
+    # one it is, for the tooltip
+    e_line_(chart, var[[1]], emphasis = list(focus = "series"),
+            triggerLineEvent = relative)
+  }
+  chart |>
+    # On phones, the tooltip is often wider than the room beside the finger, or
+    # even than the chart (with the long names of the categories), and ECharts
+    # would then push it partly off the screen. So it's kept within the chart, and
+    # its lines wrap if it's still too wide (but not within a value and its unit).
+    # The tooltip of the legend, with the names cut short there, does the same
+    e_tooltip(trigger = "axis", confine = TRUE, extraCssText = "white-space: normal;",
+              formatter = htmlwidgets::JS(sprintf("
+                function(params) {
+                  return params[0].name + '<br>' +
+                    params.map(function(p) {
+                      // With crosstalk, p.value is the whole data row as an object,
+                      // not [x, y], so this reads the plotted column from it
+                      var column = p.dimensionNames[p.encode.y[0]];
+                      // The set decimals, or two significant digits if that's more
+                      // precise, so that small values aren't rounded to 0
+                      var value = Number(p.value[column]).toLocaleString('hu-HU', {
+                        maximumFractionDigits: %d, maximumSignificantDigits: 2,
+                        roundingPriority: 'morePrecision'
+                      });
+
+                      return p.marker + ' ' + p.seriesName +
+                        ': <b style=\"white-space: nowrap\">' + value + '%s</b>';
+                    }).join('<br>');
+                }", fraction_digits, unit_suffix))) |>
+    e_y_axis(name = axis_name[[1]],
+             axisLabel = list(
+               # toLocaleString keeps only 3 decimals by default, too few for the
+               # ticks of the smallest categories
+               formatter = htmlwidgets::JS("
+                function(value) {
+                  return value.toLocaleString('hu-HU', { maximumFractionDigits: 20 });
+                }
+              ")
+             ))
+}
+
+# The heatmap of a category_chart() (see there): a row for each part, labelled by
+# its code, from the top in the order of the codes, with a height that follows its
+# weight, its share of the whole's spending in the base year (proportional to the
+# weight's square root with `row_scale = "sqrt"`, or to the weight itself with
+# "linear": see relayout() below), a column for each year, and the cells coloured by
+# the column var[[1]] (the one plotted at first), relative to the base year, with
+# `axis_name[[1]]` on the y axis, as it tells what the colours show. The colours run
+# continuously on a log scale, so that halving looks as
+# strong as doubling, from red at 1/2 through light grey at 1 (no change) to blue
+# at 2, and the ratios beyond take the colours at the ends: over a wider range, most
+# ratios would be barely tinted. Light grey, so that no change can be told from the
+# cells without a ratio, which are left empty. The colour scale beside the plot is
+# `sizes$scale` px tall, labelled at 1/2, 0.8, 1, 1.25 and 2 (symmetric around 1 on
+# the log scale, as 0.8 = 1/1.25). As the y axis only shows the codes, the legend
+# lists the full names of the rows, `row_names` (by code), and so does the tooltip,
+# with the value of the hovered cell, followed by `unit_suffix`, with at most
+# `fraction_digits` decimals. The filters of the crosstalk group `group` leave the
+# rows of the parts they pick, and the years from their first to their last.
+# `sizes` also gives the average height of a row (`row`) and the least height of
+# the plot (`plot`), in px, as add_chart_layout() lays it out
+add_category_heatmap <- function(chart, var, axis_name, row_names, group,
+                                 unit_suffix, fraction_digits, sizes, row_scale) {
+  # ColorBrewer's RdBu, from decrease (red) to increase (blue), but light grey in the
+  # middle (see above), spread evenly over the log2 of the ratios from -1 to 1, and
+  # blended in the CIELAB colour space, where the lightness changes evenly
+  ramp <- grDevices::colorRamp(c("#b2182b", "#ef8a62", "#fddbc7", "#e0e0e0", "#d1e5f0",
+                                 "#67a9cf", "#2166ac"), space = "Lab")
+  color_at <- \(log_ratio) grDevices::rgb(ramp((log_ratio + 1) / 2), maxColorValue = 255)
+  # ECharts' visualMap only maps values linearly, so it colours the cells by pieces
+  # 1/32 wide on the log2 scale, too narrow to tell apart, each as its middle (the
+  # ones at the ends also taking every ratio beyond). Its own legend can't label a
+  # gradient between its ends, so it's hidden, and the colour scale drawn by hand
+  middles <- seq(-1, 1, by = 1 / 32)
+  breaks <- 2^(head(middles, -1) + 1 / 64)
+  pieces <- Map(\(lower, upper, color) {
+    c(if (is.finite(lower)) list(gte = lower), if (is.finite(upper)) list(lt = upper),
+      list(color = color))
+  }, c(-Inf, breaks), c(breaks, Inf), color_at(middles))
+  number <- \(x) sub(".", ",", as.character(x), fixed = TRUE)
+  ticks <- c(0.5, 0.8, 1, 1.25, 2)
+  scale <- list(
+    height = sizes$scale,
+    # The colours of the bar, from the bottom up
+    stops = Map(\(offset, color) list(offset = offset, color = color),
+                (middles + 1) / 2, color_at(middles)),
+    # From the bottom up, at their positions as fractions of the height of the bar
+    ticks = Map(\(position, label) list(position = position, label = label),
+                (log2(ticks) + 1) / 2,
+                c(paste("\u2264", number(ticks[1])), number(ticks[2:4]),
+                  paste("\u2265", number(ticks[5]))))
+  )
+  
+  # Set up as a heatmap, but drawn by hand, as a custom series (see renderItem()
+  # below), as the rows of a heatmap are all equally tall
+  chart <- e_heatmap_(chart, "code", var[[1]])
+  chart$x$opts$series[[1]] <- modifyList(chart$x$opts$series[[1]], list(
+    # So that it can be updated by itself (see add_column_choice())
+    id = "heatmap", type = "custom", encode = list(value = var[[1]]),
+    # Nothing to draw until the rows are laid out
+    renderItem = htmlwidgets::JS("function() { return null; }")
+  ))
+  # The legend lists series without data, one for each name, without icons, so one
+  # name in each line, so that it's clear where one ends and the next one starts
+  full_names <- unique(unlist(row_names, use.names = FALSE))
+  chart$x$opts$series <- c(chart$x$opts$series, lapply(full_names, \(name) {
+    list(name = name, type = "line", data = list())
+  }))
+  chart$x$opts$legend <- list(data = as.list(full_names), orient = "vertical",
+                              icon = "none", itemWidth = 0, selectedMode = FALSE)
+  chart$x$opts$visualMap <- list(list(
+    type = "piecewise", show = FALSE, seriesIndex = 0, dimension = var[[1]],
+    pieces = pieces
+  ))
+  # The rows take up their weights' shares of the y axis, from 0 at the top to 1 at
+  # the bottom, labelled with their codes instead of numbers (see relayout()
+  # below). Its name starts above the rows: centred on the axis, as in the other
+  # modes, it would push the plot to the right on phones (ECharts keeps it within
+  # the chart)
+  chart$x$opts$yAxis <- list(list(
+    type = "value", min = 0, max = 1, inverse = TRUE, name = axis_name[[1]],
+    nameLocation = "start", nameTextStyle = list(align = "left"),
+    axisLine = list(show = FALSE), axisTick = list(show = FALSE),
+    splitLine = list(show = FALSE), axisLabel = list(customValues = list())
+  ))
+  
+  chart |>
+    # Room on the left for the codes
+    e_grid(left = 60) |>
+    # Kept within the chart, with its lines wrapped, as the tooltip of the lines
+    e_tooltip(trigger = "item", confine = TRUE, extraCssText = "white-space: normal;") |>
+    # The cells line the axes, which would only show beside the empty ones. (Not
+    # at the 0 of the y axis, which is at the top)
+    e_x_axis(axisLine = list(show = FALSE, onZero = FALSE)) |>
+    htmlwidgets::onRender("
+      function(el, x, data) {
+        var chart = echarts.getInstanceByDom(el);
+        var option = chart.getOption(), years = option.xAxis[0].data;
+        // The data as it came, before the slider divides it by the base year (see
+        // add_base_year_slider()), and the series
+        var source = option.dataset[0].source, series = chart.getModel().getSeriesByIndex(0);
+        var format = new Intl.NumberFormat('hu-HU', {
+          maximumFractionDigits: data.digits, maximumSignificantDigits: 2,
+          roundingPriority: 'morePrecision'
+        });
+        var percent = new Intl.NumberFormat('hu-HU', {
+          maximumFractionDigits: 1, maximumSignificantDigits: 2,
+          roundingPriority: 'morePrecision'
+        });
+        // The colour scale (see above), in the font and the colour of the labels of
+        // the axes: a bar of the colours, with ticks and labels on its right, the
+        // labels at the ends within its height, so that it lines up with the plot
+        var label = option.yAxis[0].axisLabel, scale = data.scale;
+        var font = { fill: label.color, fontSize: label.fontSize,
+                     fontFamily: option.textStyle.fontFamily };
+        var context = document.createElement('canvas').getContext('2d');
+        context.font = font.fontSize + 'px ' + font.fontFamily;
+        var labelWidth = Math.max.apply(null, scale.ticks.map(function(tick) {
+          return context.measureText(tick.label).width;
+        }));
+        var children = [{
+          type: 'rect', shape: { width: 12, height: scale.height }, silent: true,
+          style: {
+            fill: { type: 'linear', x: 0, y: 1, x2: 0, y2: 0, colorStops: scale.stops }
+          }
+        }];
+        scale.ticks.forEach(function(tick, i) {
+          var y = Math.round(scale.height * (1 - tick.position));
+          children.push({
+            // A pixel high, within the height of the bar. (Not a line, whose bounds
+            // ECharts would widen, moving the bar below the top of the plot)
+            type: 'rect', silent: true, style: { fill: label.color },
+            shape: { x: 12, y: Math.min(y, scale.height - 1), width: 4, height: 1 }
+          }, {
+            type: 'text', x: 19, y: y, silent: true,
+            style: Object.assign({
+              text: tick.label,
+              verticalAlign: i === 0 ? 'bottom' :
+                i === scale.ticks.length - 1 ? 'top' : 'middle'
+            }, font)
+          });
+        });
+
+        chart.setOption({
+          // The year, the full name of the row and the value of the hovered cell, as
+          // in the tooltip of the lines, and the weight of the row (see relayout()).
+          // (With crosstalk, p.value is the whole data row as an object)
+          tooltip: {
+            formatter: function(p) {
+              function value(dim) { return p.value[p.dimensionNames[p.encode[dim][0]]]; }
+              var row = rows[value('y')];
+              return value('x') + '<br>' + p.marker + ' ' + data.names[value('y')] +
+                ': <b style=\"white-space: nowrap\">' + format.format(value('value')) +
+                data.unit + '</b><br>Súlya a bázisévben: ' +
+                (row ? percent.format(100 * row.share) + '%' : '');
+            }
+          },
+          // Beside the plot, 12px from it, from its top (see add_chart_layout())
+          graphic: { elements: [{
+            id: 'colorScale', type: 'group', right: 10, top: option.grid[0].top,
+            children: children
+          }] },
+          grid: { right: 10 + 19 + Math.ceil(labelWidth) + 12 }
+        });
+
+        // The rows of the data that the filters leave, the base year, and the layout
+        // of the rows shown: for each code, its weight (see below) and its span on
+        // the y axis
+        var shown = [], baseYear = null, rows = {};
+
+        // A cell as a rectangle across its year and down its row's span, coloured by
+        // its value (left out if it has none, or if its row isn't shown). White lines
+        // between the cells, as in a heatmap, except around rows too thin for them,
+        // and dark ones around the highlighted cells
+        function renderItem(params, api) {
+          var points = series.getData();
+          var row = rows[points.getRawDataItem(params.dataIndexInside).code];
+          if (!row || isNaN(api.value(points.mapDimension('value')))) return null;
+          var year = api.value('yearchr');
+          var top = api.coord([year, row.span[0]]), bottom = api.coord([year, row.span[1]]);
+          var width = api.size([1, 0])[0], height = bottom[1] - top[1];
+          return {
+            type: 'rect',
+            shape: { x: top[0] - width / 2, y: top[1], width: width, height: height },
+            style: { fill: api.visual('color'), stroke: height >= 5 ? '#fff' : null,
+                     lineWidth: 1 },
+            emphasis: { style: { stroke: '#333', lineWidth: 1.5 } }
+          };
+        }
+
+        // Lays out the rows shown, from the top in the order of their codes, each
+        // with a height proportional to its weight, its share of the whole's spending
+        // in the base year (by absolute value; the rows without any then are left
+        // out), or with data.rowScale 'sqrt', to the weight's square root, but at
+        // least 2px, so that it stays visible. Labels them with their codes, from the
+        // largest, wherever a label stays 13px clear of the others, and lists their
+        // names in the legend
+        function relayout() {
+          var weights = {};
+          shown.forEach(function(r) {
+            if (r.yearchr === baseYear && r.spending) weights[r.code] = Math.abs(r.spending);
+          });
+          var codes = data.codes.filter(function(code) { return weights[code] > 0; });
+          // What the heights are proportional to
+          var extents = {};
+          codes.forEach(function(code) {
+            extents[code] = data.rowScale === 'sqrt' ? Math.sqrt(weights[code]) : weights[code];
+          });
+          // The height of the plot, as add_chart_layout() makes it
+          var n = codes.length, plot = Math.max(n * data.sizes.row, data.sizes.plot);
+          var min = 2 / plot, thin = {}, rest = 1, sum, newly;
+          // The rows that would be thinner get the minimum, and the others share the
+          // rest
+          do {
+            sum = 0;
+            codes.forEach(function(code) { if (!thin[code]) sum += extents[code]; });
+            newly = codes.filter(function(code) {
+              return !thin[code] && extents[code] / sum * rest < min;
+            });
+            newly.forEach(function(code) { thin[code] = true; });
+            rest -= newly.length * min;
+          } while (newly.length);
+          var total = codes.reduce(function(s, code) { return s + weights[code]; }, 0);
+          var top = 0, labels = new Map();
+          rows = {};
+          codes.forEach(function(code) {
+            var height = thin[code] ? min : extents[code] / sum * rest;
+            rows[code] = { share: weights[code] / total, span: [top, top + height] };
+            top += height;
+          });
+          codes.slice().sort(function(a, b) { return weights[b] - weights[a]; })
+            .forEach(function(code) {
+              var middle = (rows[code].span[0] + rows[code].span[1]) / 2;
+              var clear = Array.from(labels.keys()).every(function(m) {
+                return Math.abs(m - middle) >= 13 / plot;
+              });
+              if (clear) labels.set(middle, code);
+            });
+          chart.setOption({
+            legend: { data: codes.map(function(code) { return data.names[code]; }) },
+            yAxis: { axisLabel: {
+              customValues: Array.from(labels.keys()).sort(function(a, b) { return a - b; }),
+              formatter: function(value) { return labels.get(value) || ''; }
+            } },
+            // Redrawn in the new layout
+            series: [{ id: 'heatmap', renderItem: renderItem }]
+          });
+        }
+
+        // When the filters change, the heatmap shows only the rows of the parts
+        // left, and the x axis only the years from their first to their last
+        new crosstalk.FilterHandle(data.group).on('change', function(e) {
+          var keys = e.value && new Set(e.value.map(String)), hasYear = {};
+          shown = source.filter(function(r) { return !keys || keys.has(String(r.XkeyX)); });
+          shown.forEach(function(r) { hasYear[r.yearchr] = true; });
+          var covered = years.filter(function(year) { return hasYear[year]; });
+          chart.setOption({
+            xAxis: {
+              data: years.slice(years.indexOf(covered[0]),
+                                years.indexOf(covered[covered.length - 1]) + 1)
+            }
+          });
+          relayout();
+        });
+        // And when the base year does
+        el.addEventListener('baseyear', function(e) {
+          baseYear = e.detail;
+          relayout();
+        });
+
+        // Hovering a name in the legend highlights the cells of its row (rather than
+        // the series of that name, which has none)
+        var named = new Set(data.codes.map(function(code) { return data.names[code]; }));
+        ['highlight', 'downplay'].forEach(function(type) {
+          chart.on(type, function(e) {
+            // Not for the actions dispatched here, which name no series
+            if (!named.has(e.seriesName)) return;
+            var points = chart.getModel().getSeriesByIndex(0).getData();
+            var row = points.mapDimension('y'), cells = [];
+            for (var i = 0; i < points.count(); i++) {
+              if (data.names[points.getRawDataItem(i)[row]] === e.seriesName) {
+                cells.push(points.getRawIndex(i));
+              }
+            }
+            chart.dispatchAction({ type: type, seriesIndex: 0, dataIndex: cells });
+          });
+        });
+      }
+    ", data = list(group = group, codes = as.list(names(row_names)), names = row_names,
+                   unit = unit_suffix, digits = fraction_digits, scale = scale,
+                   sizes = sizes, rowScale = row_scale))
+}
+
+# The credit below a category_chart() and the x axis, of the years
+add_chart_frame <- function(chart) {
+  chart <- chart |>
+    e_title(subtext = "Ferenci Tamás (medstat.hu)", bottom = 0, right = 10,
+            sublink = "https://www.medstat.hu/", subtarget = "blank") |>
+    # The first and last years are always labelled, not only when ECharts' step
+    # between labels happens to land on them. A label that would collide with
+    # them is hidden instead (with hideOverlap, also one that would come within a
+    # few pixels)
+    e_x_axis(name = "Év",
+             axisLabel = list(showMinLabel = TRUE, showMaxLabel = TRUE,
+                              hideOverlap = TRUE))
+  # ECharts shows the tooltip where it last was (at first, the middle of the chart)
+  # before moving it into place, so it may stick out of the chart for a moment,
+  # which is enough for phones to widen the page, and leave it widened. The chart
+  # clips it, which hides nothing, as the tooltip always ends up within the chart
+  htmlwidgets::onRender(chart, "function(el) { el.style.overflow = 'hidden'; }")
+}
+
+# For screen readers, a category_chart() (see there) is an image, described by its
+# title, its axes and the values shown, formatted as in the tooltip (with
+# `unit_suffix` and at most `fraction_digits` decimals). `type` names the kind of
+# chart. A heatmap's values are listed by row, under the rows' names in `row_names`
+# (by their values on the y axis). (ECharts' own description, with e_aria(), would
+# be in English and list every column of the data, for every series, even the ones
+# filtered out)
+add_chart_description <- function(chart, type, unit_suffix, fraction_digits,
+                                  row_names = NULL) {
+  chart |>
+    htmlwidgets::onRender("
+      function(el, x, data) {
+        var chart = echarts.getInstanceByDom(el);
+        var format = new Intl.NumberFormat('hu-HU', {
+          maximumFractionDigits: data.digits, maximumSignificantDigits: 2,
+          roundingPriority: 'morePrecision'
+        });
+        el.setAttribute('role', 'img');
+
+        // After every redraw, so whenever the filters, the plotted column, the
+        // title or the legend change
+        chart.on('finished', function() {
+          var model = chart.getModel(), parts = [];
+          model.eachComponent('title', function(title) { parts.push(title.get('text')); });
+          var yName = model.getComponent('yAxis').get('name');
+          parts.push(data.type,
+                     'Vízszintes tengely: ' + model.getComponent('xAxis').get('name'));
+          // A heatmap's y axis is named after what its colours show
+          if (data.rowNames) {
+            parts.push('Függőleges tengely: kategóriák', 'A cellák színe: ' + yName);
+          } else {
+            parts.push('Függőleges tengely: ' + yName);
+          }
+          // Skips the series hidden with the legend; those filtered out have no data.
+          // Series of the same name (in stack mode, the negative and the positive
+          // parts of a category) are added up. A heatmap's values, those its cells
+          // are coloured by, are listed by row
+          var sums = new Map();
+          model.eachSeries(function(series) {
+            var points = series.getData(), heatmap = series.id === 'heatmap';
+            var y = points.mapDimension(heatmap ? 'value' : 'y');
+            for (var i = 0; i < points.count(); i++) {
+              var x = points.getName(i), value = points.get(y, i);
+              if (isNaN(value)) continue;
+              var name = heatmap ?
+                data.rowNames[points.getRawDataItem(i)[points.mapDimension('y')]] :
+                series.name;
+              var values = sums.get(name) || new Map();
+              values.set(x, (values.get(x) || 0) + value);
+              sums.set(name, values);
+            }
+          });
+          sums.forEach(function(values, name) {
+            parts.push(name + ': ' + Array.from(values, function(entry) {
+              return entry[0] + ': ' + format.format(entry[1]) + data.unit;
+            }).join('; '));
+          });
+          var label = parts.filter(Boolean).join('. ').replace(/\\n/g, ' ') + '.';
+          // The chart is also redrawn on hover
+          if (label !== el.getAttribute('aria-label')) el.setAttribute('aria-label', label);
+        });
+      }
+    ", data = list(type = type, unit = unit_suffix, digits = fraction_digits,
+                   rowNames = row_names))
+}
+
+# With several columns in `var`, a category_chart() (see there) plots the one
+# chosen with its radio buttons (see category_ids() for `ids`), with its name in
+# `axis_name` on the y axis. `parent_var` are the columns relative to the main
+# group, which can't be chosen while it's "Összesen", showing `parts`. A heatmap
+# colours its cells by the chosen column
+add_column_choice <- function(chart, ids, var, axis_name, parent_var, parts = FALSE,
+                              heatmap = FALSE) {
+  if (length(var) > 1) {
+    # Plots the chosen column, with its axis name. Also run at the start, in case
+    # the browser restored an earlier choice when reloading the page. Showing
+    # parts, while the main group dropdown is at "Összesen" (or still empty, before
+    # it's filled), the buttons don't offer the columns relative to the main group:
+    # if one of those is chosen, the first column offered is plotted (and checked)
+    # instead, until a main group is chosen again. The buttons are hidden while
+    # they offer only one column
+    chart <- chart |>
+      htmlwidgets::onRender("
+        function(el, x, data) {
+          var chart = echarts.getInstanceByDom(el);
+          var choice = document.getElementById(data.id);
+          var main = data.mainId && document.getElementById(data.mainId);
+          var inputs = Array.from(choice.querySelectorAll('input'));
+          // The column chosen with the buttons, kept while it isn't offered
+          var chosen = choice.querySelector('input:checked').value;
+
+          function update() {
+            var whole = !!main && (!main.value || main.value === 'Összesen');
+            var offered = inputs.filter(function(input) {
+              var shown = !whole || data.parentColumns.indexOf(input.value) < 0;
+              input.hidden = input.labels[0].hidden = !shown;
+              return shown;
+            });
+            var plotted = offered.find(function(input) {
+              return input.value === chosen;
+            }) || offered[0];
+            plotted.checked = true;
+            // The div around the buttons, so that they leave no gap in the row
+            choice.parentElement.hidden = offered.length < 2;
+            var column = plotted.value;
+            var options = { yAxis: { name: data.axisNames[column] } };
+            if (data.heatmap) {
+              options.series = [{ id: 'heatmap', encode: { value: column } }];
+              options.visualMap = { dimension: column };
+            } else {
+              options.series = chart.getOption().series.map(function(s) {
+                // In stack mode, the series of negative parts plot the column
+                // with _neg appended
+                var negative = /_neg$/.test([].concat(s.encode.y)[0]);
+                return { encode: { y: negative ? column + '_neg' : column } };
+              });
+            }
+            chart.setOption(options);
+          }
+
+          choice.addEventListener('change', function() {
+            chosen = choice.querySelector('input:checked').value;
+            update();
+          });
+          if (main) main.addEventListener('change', update);
+          update();
+        }
+      ", data = c(list(id = ids$var, axisNames = as.list(setNames(axis_name, var)),
+                       parentColumns = as.list(unname(parent_var)), heatmap = heatmap),
+                  if (parts) list(mainId = ids$main)))
+  }
+  chart
+}
+
+# Showing parts (`paths`, see category_data()), a category_chart() (see there)
+# names its lines or stacked areas after their categories, colours them, and shows
+# only those that the filters of the crosstalk group `group` leave (see below). With
+# `unit = "%"`, the stacked areas are kept within 0 and 100% (see below)
+add_part_lines <- function(chart, paths, group, stack = FALSE, unit = "") {
+  if (!is.null(paths)) {
+    # echarts4r names each series after its group, but it should show the label
+    # of its category (which has a series in each classification it's in)
+    ids <- vapply(chart$x$opts$series, \(s) s$name, "")
+    labels <- as.character(paths$nameLabel[match(ids, paths$series)])
+    chart$x$opts$series <- Map(\(s, label) modifyList(s, list(name = label)),
+                               chart$x$opts$series, labels)
+    chart$x$opts$legend$data <- as.list(unique(labels))
+    
+    if (stack && unit == "%") {
+      # The positive parts of a whole stack up to 100%, but rounding errors can put
+      # the top a hair above it, and negative parts too small to see push it up as
+      # much as they go below 0. ECharts would then run the axis to 120, or down to
+      # -20, so an overshoot of less than 0.5% of the axis is cut off, above 100 and
+      # below 0. (When the top stays at or below 100, so does ECharts' own maximum)
+      chart <- e_y_axis(
+        chart,
+        max = htmlwidgets::JS("
+          function(value) {
+            var range = value.max - Math.min(value.min, 0);
+            return value.max > 100 && value.max - 100 < 0.005 * range ? 100 : null;
+          }
+        "),
+        min = htmlwidgets::JS("
+          function(value) {
+            return value.min < 0 && -value.min < 0.005 * (value.max - value.min) ? 0 : null;
+          }
+        ")
+      )
+    }
+    
+    chart <- chart |>
+      # ECharts' default palette has 9 colours, so this adds 7 for the 16 Hungarian
+      # main groups, each picked (among colours of moderate lightness and chroma)
+      # to differ as much as possible from all the colours before it, by CIEDE2000
+      e_color(c("#5070dd", "#b6d634", "#505372", "#ff994d", "#0ca8df", "#ffd10a",
+                "#fb628b", "#785db0", "#3fbe95", "#666018", "#a04024", "#c3b0e4",
+                "#ab2965", "#167a4e", "#ae9d69", "#027588")) |>
+      htmlwidgets::onRender("
+        function(el, x, data) {
+          var chart = echarts.getInstanceByDom(el);
+          var option = chart.getOption();
+          var names = option.series.map(function(s) { return s.name; });
+          var palette = option.color, years = option.xAxis[0].data;
+
+          // The chart has a series for every part of every whole, so when the
+          // filters change, this shows only the series left in the legend,
+          // coloured as if they were the only ones, and only the years from their
+          // first to their last
+          new crosstalk.FilterHandle(data.group).on('change', function(e) {
+            var keys = e.value && new Set(e.value.map(String));
+            var shown = {}, hasYear = {};
+            option.dataset[0].source.forEach(function(row) {
+              if (keys && !keys.has(String(row.XkeyX))) return;
+              shown[row.series] = true;
+              hasYear[row.yearchr] = true;
+            });
+            // Each name once, as in stack mode a category has a series for its
+            // negative and one for its positive parts
+            var legend = [];
+            names.forEach(function(name, i) {
+              if (shown[data.series[i]] && legend.indexOf(name) < 0) legend.push(name);
+            });
+            var covered = years.filter(function(year) { return hasYear[year]; });
+            var color = {};
+            legend.forEach(function(name, i) {
+              color[name] = palette[i % palette.length];
+            });
+            chart.setOption({
+              // Stacked, in the order of the areas from the top of the stack down
+              // (though coloured from the bottom up)
+              legend: { data: option.series[0].stack ? legend.slice().reverse() : legend },
+              xAxis: {
+                data: years.slice(years.indexOf(covered[0]),
+                                  years.indexOf(covered[covered.length - 1]) + 1)
+              },
+              // Also the series of the same category in the other
+              // classification, as the legend takes the colour of the first
+              // series of a name
+              series: names.map(function(name) {
+                return color[name] ? { color: color[name] } : {};
+              })
+            });
+          });
+
+          // The formatter of e_tooltip() only gets the hovered category: in stack
+          // mode, its negative part in a year when it's negative, else its
+          // positive part
+          var format = option.tooltip[0].formatter, hovered = null;
+          function column(p) { return p.dimensionNames[p.encode.y[0]]; }
+          chart.setOption({
+            tooltip: {
+              formatter: function(params) {
+                params = params.filter(function(p) { return p.seriesName === hovered; });
+                var shown = params.filter(function(p) { return p.value[column(p)] < 0; });
+                if (!shown.length) {
+                  shown = params.filter(function(p) { return !/_neg$/.test(column(p)); });
+                }
+                return shown.length ? format(shown) : '';
+              }
+            }
+          });
+
+          chart.on('mouseover', 'series', function(p) {
+            hovered = p.seriesName;
+            // ECharts only emphasizes the hovered series, but in stack mode a
+            // category has a series for its negative and one for its positive
+            // parts, so this emphasizes both, as hovering its name in the legend
+            // does
+            chart.dispatchAction({ type: 'highlight', seriesName: p.seriesName });
+            // The tooltip was already drawn for this mouse move, so redraw it
+            chart.dispatchAction({
+              type: 'showTip', x: p.event.offsetX, y: p.event.offsetY
+            });
+          });
+
+          chart.on('mouseout', 'series', function(p) {
+            hovered = null;
+            chart.dispatchAction({ type: 'downplay', seriesName: p.seriesName });
+          });
+        }
+      ", data = list(group = group, series = as.list(ids)))
+  }
+  chart
+}
+
+# In relative mode (with a `base_year`), a category_chart() (see there) divides
+# the values of the columns `var` by those in the base year, chosen with its slider
+# (see category_ids() for `ids`), at first `base_year`
+add_base_year_slider <- function(chart, ids, var, base_year = NULL) {
+  if (!is.null(base_year)) {
+    # Plots the values of each line divided by its value in the base year (none if
+    # that isn't positive), chosen with the slider among the years that the parts
+    # shown have data for. When the filters change, the slider keeps its year if
+    # they have data for it, else it moves to the nearest year they do. The chosen
+    # year is also kept in the data-year attribute of the slider, for the title,
+    # which is set after this so that it reads the year already updated, and the
+    # chart's element gets a "baseyear" event (with the year as its detail) whenever
+    # it changes
+    chart <- chart |>
+      htmlwidgets::onRender("
+        function(el, x, data) {
+          var chart = echarts.getInstanceByDom(el);
+          var option = chart.getOption();
+          // The values from RawData, which those plotted are computed from
+          var rows = option.dataset[0].source, years = option.xAxis[0].data;
+          var slider = document.getElementById(data.id);
+          var output = document.getElementById(data.id + '_value');
+          // The years offered, the chosen one, and the one the values are divided by
+          var offered = years, year = data.year, plotted = null;
+
+          slider.addEventListener('input', function() {
+            year = offered[slider.value];
+            output.textContent = year;
+            slider.setAttribute('aria-valuetext', year);
+            slider.dataset.year = year;
+            if (year === plotted) return;
+            plotted = year;
+            var base = {};
+            rows.forEach(function(row) {
+              if (row.yearchr === year) base[row.line] = row;
+            });
+            chart.setOption({
+              dataset: {
+                id: 'source',
+                source: rows.map(function(row) {
+                  var ratios = {}, b = base[row.line];
+                  data.columns.forEach(function(column) {
+                    ratios[column] = b && b[column] > 0 && row[column] != null ?
+                      row[column] / b[column] : null;
+                  });
+                  return Object.assign({}, row, ratios);
+                })
+              }
+            });
+            el.dispatchEvent(new CustomEvent('baseyear', { detail: year }));
+          });
+
+          // Offers `years`, at the chosen year or, if it isn't among them, at the
+          // nearest one
+          function offer(years) {
+            offered = years;
+            var at = 0;
+            years.forEach(function(y, i) {
+              if (Math.abs(y - year) < Math.abs(years[at] - year)) at = i;
+            });
+            slider.max = years.length - 1;
+            slider.value = at;
+            slider.dispatchEvent(new Event('input'));
+          }
+
+          new crosstalk.FilterHandle(data.group).on('change', function(e) {
+            var keys = e.value && new Set(e.value.map(String)), hasYear = {};
+            rows.forEach(function(row) {
+              if (!keys || keys.has(String(row.XkeyX))) hasYear[row.yearchr] = true;
+            });
+            var covered = years.filter(function(y) { return hasYear[y]; });
+            if (covered.length) offer(covered);
+          });
+
+          offer(years);
+        }
+      ", data = list(id = ids$base, group = ids$group, columns = as.list(unname(var)),
+                     year = as.character(base_year)))
+  }
+  chart
+}
+
+# The title of a category_chart() (see there), if any, from `title` and the choices
+# of its filters (see category_ids() for `ids`), and the room for it, for the legend
+# and, in a heatmap, for its rows, `row_height` px each on average, with the plot
+# at least `min_plot_height` px tall: see below. `paths` are the parts shown, if any
+# (see category_data())
+add_chart_layout <- function(chart, title, ids, paths = NULL, relative = FALSE,
+                             row_height = NULL, min_plot_height = 0) {
+  parts <- !is.null(paths)
+  # The end of the title for each choice of the main group dropdown and of the
+  # subgroup dropdown or, showing parts, of the type
+  if (!is.null(title)) {
+    name_of <- \(label) RawData$name[match(label, RawData$nameLabel)]
+    ends <- if (parts) {
+      unique(paths[, .(main, second = as.character(typeLabel))])[, end := fifelse(
+        main == "Összesen", second, paste0(name_of(main), ", ", second)
+      )]
+    } else {
+      unique(CategoryPaths[, .(main, second = sub)])[, end := fifelse(
+        second == "Összesen", name_of(main),
+        paste0(name_of(main), ", ", name_of(second))
+      )]
+    }
+  }
+  
+  # The title, if any, with room for it above the plot, and room for the legend
+  # below it: ECharts puts the legend at the bottom, and wraps it into more lines
+  # when the chart is too narrow for one (as on phones, or showing parts, when it
+  # has many items), but only leaves room for one, so the others would cover the
+  # horizontal axis. If a name is too long for a line of the legend (as on
+  # phones), the names are cut short with an ellipsis, and shown whole on hover
+  chart |>
+    htmlwidgets::onRender("
+      function(el, x, data) {
+        var chart = echarts.getInstanceByDom(el);
+        var main = document.getElementById(data.mainId);
+        // The subgroup dropdown or, showing parts, the radio buttons of the type
+        var second = document.getElementById(data.secondId);
+        // In relative mode, the slider of the base year
+        var base = data.baseId && document.getElementById(data.baseId);
+        var download = document.getElementById(data.downloadId);
+        // The height of the chart, and the room above and below the plot without
+        // the title and with a legend of one line
+        var option = chart.getOption(), height = el.clientHeight;
+        var gridTop = option.grid[0].top, gridBottom = option.grid[0].bottom;
+        var context = document.createElement('canvas').getContext('2d');
+
+        // ECharts could wrap the title too, but wouldn't tell into how many
+        // lines, which decides how much room the title needs
+        function wrap(text, width) {
+          return text.split(' ').reduce(function(lines, word) {
+            var last = lines[lines.length - 1];
+            if (last && context.measureText(last + ' ' + word).width <= width) {
+              lines[lines.length - 1] = last + ' ' + word;
+            } else {
+              lines.push(word);
+            }
+            return lines;
+          }, []);
+        }
+
+        // How much higher the legend is than its first line (its items are all of
+        // the same height)
+        function legendExtra() {
+          var model = chart.getModel().getComponent('legend');
+          var view = model && chart.getViewOfComponentModel(model);
+          var items = view && view.getContentGroup(), first = items && items.childAt(0);
+          return first ?
+            Math.round(items.getBoundingRect().height - first.getBoundingRect().height) : 0;
+        }
+
+        // In a heatmap, how much taller its rows are, data.rowHeight px each on
+        // average, than the plot was at first. The plot is at least
+        // data.minPlotHeight tall, though. (The legend names each row)
+        function rowsExtra() {
+          var rows = chart.getModel().getComponent('legend').get('data').length *
+            data.rowHeight;
+          return Math.max(rows, data.minPlotHeight) - (height - gridTop - gridBottom);
+        }
+
+        // Cuts the names in the legend short if one is too long for a line (see
+        // above). Only redone when the names or the width of the chart change
+        var fitted = null, cut = false;
+        function fitLegend() {
+          var model = chart.getModel().getComponent('legend');
+          if (!model) return;
+          var key = JSON.stringify([chart.getWidth(), model.get('data')]);
+          if (key === fitted) return;
+          fitted = key;
+          // Whole names first, to see if they fit
+          if (cut) {
+            chart.setOption({ legend: {
+              textStyle: { width: null, overflow: 'none' }, tooltip: { show: false }
+            } });
+            cut = false;
+          }
+          // The padding of the legend is given as in CSS
+          var padding = [].concat(model.get('padding'));
+          var right = padding.length > 1 ? padding[1] : padding[0];
+          var room = chart.getWidth() - right - (padding.length > 3 ? padding[3] : right);
+          var items = chart.getViewOfComponentModel(model).getContentGroup();
+          if (items.getBoundingRect().width > room) {
+            chart.setOption({ legend: {
+              // Beside the icon and the 5px gap after it
+              textStyle: { width: room - model.get('itemWidth') - 5, overflow: 'truncate' },
+              tooltip: { show: true }
+            } });
+            cut = true;
+          }
+        }
+
+        function update() {
+          // ECharts lays out the legend for the width it has, which htmlwidgets
+          // may not have updated yet when the window was resized
+          if (chart.getWidth() !== el.clientWidth) {
+            chart.resize({ width: el.clientWidth, height: el.clientHeight });
+          }
+          fitLegend();
+          var legendRoom = legendExtra(), titleRoom = 0;
+          var rowsRoom = data.rowHeight ? rowsExtra() : 0;
+          var options = { grid: { bottom: gridBottom + legendRoom } };
+          var end = data.title && (data.ends[main.value] || {})[second.tagName === 'SELECT' ?
+            second.value : second.querySelector('input:checked').value];
+          // Unless the chart has no title, or the dropdowns aren't filled yet
+          if (end) {
+            if (base) end += ', bázisév: ' + base.dataset.year;
+            // Smaller on phones, where the title takes several lines anyway
+            var fontSize = el.clientWidth < 500 ? 14 : 18, lineHeight = fontSize + 6;
+            context.font = 'bold ' + fontSize + 'px ' + option.textStyle.fontFamily;
+            // Clear of the download button in the top right corner, by as much as
+            // the title is from the left edge
+            var right = download.getBoundingClientRect().left - el.getBoundingClientRect().left;
+            var lines = wrap(data.title + ': ' + end, right - 20);
+            titleRoom = lines.length * lineHeight;
+            options.title = {
+              id: 'category', text: lines.join('\\n'), left: 10, top: 5,
+              textStyle: { fontSize: fontSize, fontWeight: 'bold', lineHeight: lineHeight }
+            };
+            options.grid.top = gridTop + titleRoom;
+          }
+          // The colour scale of a heatmap starts at the top of the plot
+          if (data.rowHeight) {
+            options.graphic = { elements: [{ id: 'colorScale', top: gridTop + titleRoom }] };
+          }
+          chart.setOption(options);
+          // The chart grows by the room for the two, so that the plot keeps its
+          // size (in a heatmap, the size its rows need). (The size is given
+          // explicitly, as ECharts would otherwise keep using the one htmlwidgets
+          // last gave it when the window was resized)
+          el.style.height = height + titleRoom + legendRoom + rowsRoom + 'px';
+          chart.resize({ width: el.clientWidth, height: el.clientHeight });
+        }
+
+        main.addEventListener('change', update);
+        second.addEventListener('change', update);
+        if (base) base.addEventListener('input', update);
+        // Also once the filters have changed which items the legend has (showing
+        // parts), which only happens after the change events above
+        new crosstalk.FilterHandle(data.group).on('change', update);
+        window.addEventListener('resize', update);
+        // The legend needs its room even before the dropdowns are filled
+        update();
+      }
+    ", data = list(
+      title = title, mainId = ids$main,
+      secondId = if (parts) ids$type else ids$sub, baseId = if (relative) ids$base,
+      downloadId = ids$download, group = ids$group, rowHeight = row_height,
+      minPlotHeight = min_plot_height,
+      ends = if (!is.null(title)) {
+        lapply(split(setNames(ends$end, ends$second), ends$main), as.list)
+      }
+    ))
+}
+```
+
+# A magyar költségvetés kiadásai
+
+Elsőként nézzük meg, hogy mennyit költött nominálisan (vagyis forintban mérve, és az adott évi forintban mérve) az állam az egyes funkciókra az elmúlt évtizedekben! Az ábra alapbeállítás szerint az egészségügyet mutatja, de bármilyen más funkció is kiválasztható. Használható mind a magyar, mind a nemzetközi csoportosítás; választható, hogy egy főcsoport egésze jelenjen meg (ha a csoport beállítása "Összesen"), de bármely konkrét csoport is kiválasztható.
+
+Bizonyos esetekben a kiválasztott funkció mind a hazai, mind a nemzetközi osztályozásban benne van azonos adattartalommal (vagy előállítható, mint a másik osztályozás bizonyos kategóriáinak összege), ez onnan látszik, hogy a funkciónak hazai és nemzetközi kódja egyaránt van. Máskor csak az egyik osztályozásban szerepel, ilyenkor a másik kód helyén "-" jel szerepel. Az előbbi esetben az ábrán három görbe fog látszódni: a pénzforgalmi tervezet, a pénzforgalmi teljesítés és az eredményszemléletű teljesítés. Ha a funkció csak a magyar osztályozásban jelenik meg, akkor csak két pénzforgalmi görbe látszódik, ha csak a nemzetköziben, akkor egyedül eredményszemléletű görbe lesz.
+
+A legfontosabb itt az eredményszemléletű teljesítés, a pénzforgalmi adatok mindössze két, de fontos okból szerepelnek egyáltalán az ábrán: egyrészt, hogy a tervezés minőségét, vagy, jobb esetben, a váratlan események hatását is lehessen érzékelni (mennyire van közel az előirányzat és a teljesítés -- ez csak pénzforgalmi szemléletben vizsgálható, mert eredményszemléletű előirányzat-adatunk nincsen), másrészt mert az eredményszemléletű teljesítés csak jókora időkéséssel érhető el, így a legfrissebb egy-két költségvetésnél csak pénzforgalmi adatunk lesz, viszont ennek számai természetesen csak a pénzforgalmi számokkal vethetőek össze a múltbeliek közül. Ez általában is igaz, a későbbi grafikonokra is.
+
+Nézzük akkor az eredményeket:
+
+```{r}
+category_chart("value", axis_name = "Kiadás [Mrd Ft]", unit = "Mrd Ft",
+               title = "A magyar költségvetés kiadásai nominálisan")
+```
+
+Amint megtárgyaltuk, időbeli összehasonlítás az ezen az ábrán látható nyers számok, tehát az adott évi áron kifejezett -- szép szóval: folyó áras vagy nominális -- összegek között értelmetlen. Ez az ábra is legfeljebb annyiban fontos, hogy mutatja a későbbi számításokhoz felhasznált bemenő adatokat, de önmagában sok teteje nincsen.
+
+Mit tudunk tenni?
+
+Az első megoldási lehetőség, hogy a pénzösszeget *viszonyítjuk* valamihez. Ez azért jó, mert bár a forint eltér év és év között, de a százalék ugyanaz a mértékegység, tehát az ilyen arányok jól összehasonlíthatóak évek (vagy akár országok) között. Az egyedüli kérdés az, hogy mihez viszonyítsunk? A gyakorlatban két megoldást szoktak használni.
+
+Az első lehetőség, hogy az adott funkcióra költött pénzt az összes kiadáshoz viszonyítjuk. Ez felel meg a bevezetőben említett preferencia kérdésének: a kormány a pénz mekkora hányadát szánja (például) az egészségügyre? Legközvetlenebbül ez mutatja a kormány értékeit, választását, hiszen a közvetlen döntése ebben van, hogy a pénzt hogyan osztja szét a különböző területek között.
+
+Ezt az arányt mutatja a következő ábra:
+
+```{r}
+category_chart("prop", axis_name = "Kiadás [az összes kiadás %-ában]", unit = "%",
+               title = "A magyar költségvetés kiadásai az összes kiadáshoz viszonyítva")
+```
+
+A kormány preferenciáinak leírására tehát ez a helyes mutató, de egy ellenérv azért felvethető: a kormány preferenciáiba, kiterjesztett értelemben, az is beleérthető, hogy egyáltalán mennyi pénzt, a megtermelt jövedelem mekkora hányadát szedi be. Ezért lehet értelme egy olyan mutatónak is, melyben a bruttó hazai termékhez viszonyítunk: a megtermelt érték mekkora részét fordítjuk (például) egészségügyre? Ez tehát egy két lépcsőt átfogó kimutatás lesz, amibe beleértjük azt a döntést is, hogy mennyi pénzt szed be a kormány, *és* azt is, hogy ebből mekkora hányadot fordít egészségügyre.
+
+Az alábbi ábra ezt mutatja:
+
+```{r}
+category_chart("propgdp", axis_name = "Kiadás [a GDP %-ában]", unit = "%",
+               title = "A magyar költségvetés kiadásai a GDP-hez viszonyítva")
+```
+
+(Ez az ábra nemzetközileg talán kicsit jobban összevethető, mert kiküszöböli annak a hatását, hogy az egyes államok eltérő arányban szedik be a megtermelt jövedelmet, ilyen értelemben ez a második viszonyítás semleges ezekre a különbségekre nézve. Ez persze valójában döntés kérdése: mit akarunk beleérteni a kormány által meghatározott paraméterek körébe?)
+
+Látható tehát, hogy nem arról van szó, hogy az egyik mutató jó, a másik meg rossz -- mást írnak le.
+
+A két ábra között egy egyszerű, közvetlen megfeleltetés van: a kiadás-arányos hányadot megkapjuk, ha a GDP-arányos hányadot beszorozzuk azzal, hogy az állami kiadások összesen a GDP hány százalékát jelentik. Ezt szokás újraelosztási rátának nevezni, hiszen megmutatja, hogy az állam által kiosztott pénz hogy viszonyul a teljes bruttó hazai termékhez. (A jövedelemcentralizációs ráta pedig az, hogy az állam a GDP mekkora részét vonja magához. A kettő közti különbség a költségvetési hiány: ennyivel tud az állam többet kiosztani, mint amennyit magához vont.) Ez az arány fontos, mert megmutatja az állam alapvető működési modelljét: lehet, hogy egy állam sok szolgáltatást nyújt, sok támogatást ad, de sok pénzt is von el, vagy fordítva, nem von el sok pénzt, de cserében keveset is költ az állami funkciókra. Meg persze nagyon sok egyéb kombináció képzelhető el a kettő között (kivéve azt, hogy kevés pénzt szed el, de mégis sokat oszt ki, úgy, hogy közben a jövőt sem éli fel...). Természetesen számít a hatékonyság -- elképzelhető, hogy egy ország kevesebb pénzből is jobb minőségű szolgáltatásokat hoz ki ügyes szervezéssel és gazdálkodással, egy másik pedig többől is rosszabbat -- de azért a működési kereteket alapvetően meghatározza ez az arány.
+
+A két viszonyítás közül az elsőnek, tehát az összes kiadáshoz arányosításnak megvan az a tulajdonsága, hogy a különböző kategóriák együtt 100%-ot adnak ki. Ez lehetővé teszi, hogy abból is látványos ábrát készítsünk, ha nem csak egy, hanem az *összes* arányt feltüntetjük. (Természetesen ilyenkor választanunk kell, hogy a három adatfajta közül melyiket használjuk.) Egy ilyen ábra kézenfekvően kiegészíthető az egyes főcsoportokon *belüli* megoszlással is (a különböző csoportok között); ez akkor jön elő, ha a főcsoport nem "Összesen" értékre van állítva. Ilyenkor természetesen választanunk kell, hogy továbbra is a teljes összeghez viszonyítunk, ez esetben az ábra már nem fog 100%-ig halmozódni, vagy inkább a főcsoporton belül *is* a megoszlást vizsgáljuk.
+
+Mindezt láthatjuk ezen az ábrán:
+
+```{r}
+category_chart(
+  c("Összes kiadás" = "prop", "Főcsoport kiadásai" = "propParent"),
+  axis_name = c("Kiadás [az összes kiadás %-ában]",
+                "Kiadás [a főcsoport kiadásainak %-ában]"),
+  unit = "%",
+  var_label = "Viszonyítási alap:",
+  title = "A magyar költségvetés kiadásainak összetétele",
+  stack = TRUE
+)
+```
+
+Az ábra előnye, hogy egyszerre látszik rajta az összes görbe, és nagyon szemléletesen mutatja így az összetételt, de van egy apró hátránya is: a kis kategóriáknál nehéz érzékelni a változást. Ha egy 1%-os arány 2%-ra változik, az ugyan duplázódás, de a fenti ábrán alig fog ebből bármi látszódni, olyan kicsi sáv tartozik ehhez, akár 1% az értéke, akár 2. (Az előző ábrákon nincs ilyen probléma, mert ott a függőleges tengely automatikusan az adott kategória számaihoz igazodik.)
+
+Egy lehetséges megoldás, ha az arány helyett inkább azt nézzük, hogy hogyan *változott* az arány egy adott évi értékéhez képest. Mondjuk legyen 2010 a kezdőpont, a bázisév, ez lesz az 1, és ehhez viszonyítunk arányként mindent. Ha tehát valahol 1,5-öt látunk, az azt jelenti: az adott évben a kérdéses kategóriára másfélszer annyit költött az állam *a GDP arányában*, mint a bázisévben. (Jobban megszokott, ha forintban mért számok között számolunk ilyet -- "20%-kal többet költünk erre, mint 5 éve" -- de nyugodtan számolhatunk arányokból is arányt!) Természetesen GDP-arányosítás helyett választhatjuk az összes kiadáshoz viszonyított arányt, vagy, ha nem az összes főcsoportot nézzük hanem egy főcsoport alcsoportjait, akkor a főcsoport kiadásaihoz viszonyított arányt is.
+
+Ennek ábrázolására a szokásos vonaldiagram nem a legszerencsésebb, mert olyan sok vonal lenne rajta, hogy nagyon nehezen lenne már áttekinthető. Ezért célszerűbb egy másik eszközhöz nyúlni, és hőtérképet használni. (Ezt normális körülmények között arra az esetre tartjuk fent, ha "elfogytak a dimenziók", vagyis valamit már nem lehet egy tengely mentén ábrázolni, ezért a további dimenziót a szín jelöli. Azonban most is jó szolgálatot tesz az áttekinthetőség növelésére). Az ábrán a sorokban vannak az egyes kategóriák, oszlopokban az évek, a kettő metszéspontjában lévő cellákban pedig a szín jelöli az adott kategória adott évi értékét, azaz a fent leírt szorzót; ennek azonosítását színskála segíti:
+
+```{r}
+category_chart(
+  c("Összes kiadás" = "prop", "Főcsoport kiadásai" = "propParent", "GDP" = "propgdp"),
+  axis_name = c("Kiadás az összes kiadás arányában\n[a bázisévi érték többszörösében]",
+                "Kiadás a főcsoport kiadásainak arányában\n[a bázisévi érték többszörösében]",
+                "Kiadás a GDP arányában\n[a bázisévi érték többszörösében]"),
+  unit = "",
+  var_label = "Viszonyítási alap:",
+  title = "A magyar költségvetés kiadásainak összetétele a bázisévhez viszonyítva",
+  base_year = 2010,
+  heatmap = TRUE,
+  download_axis_name = TRUE
+)
+```
+
+A fenti ábrán még egy csavar van: a sorok magassága arányos a kategória bázisévi abszolút arányával (négyzetgyökösen, hogy a kisebb kategóriák is jól látszódjanak). Ez azért jó, mert így az adott kategória *súlyáról* is van vizuális információ: minél magasabb az oszlop, annál jelentősebb kategóriáról beszélünk, ami a -- bázisévi -- arányát illeti. Így érzékelhető az is, hogy egy adott kategória esetleges nagy relatív növekedésének vagy csökkenésének mekkora jelentősége van az egész költségvetés szintjén.
+
+Még egy megjegyzés a fenti ábrához. Természetes a várakozás, hogy az egyes években, tehát oszlopokban lévő értékek, azaz színek átlaga 1 legyen (hiszen ha valamire többet költünk arányában, akkor másra meg kevesebbet kell, ráadásul ezek nem forintban mért értékek, amik összege változhat évről-évre, hanem arányok, amik együtt biztosan 1-et adnak minden évben). Ez valóban így is van, egy apró megjegyzéssel: a *súlyozott* átlag lesz 1, ahol a súlyok a bázisévi arányok. Az ábra ilyen szempontból is szerencsés: egy oszlopon belül a színek átlaga valóban 1 -- ha mindegyiket épp a cellájának a magasságával súlyozzuk!
+
+Van azonban a viszonyításon túl még egy, alapvetően más irányból közelítő lehetőség a különböző évek összehasonlíthatóságának megteremtésére.
+
+Említettem, hogy a [fehér kenyér](https://www.ksh.hu/stadat_files/ara/hu/ara0004.html) 173 forint volt 2005-ben, ha hozzátesszük, hogy 925 forint 2025-ben, akkor eléggé adja magát egy ötlet: tartsuk meg a forintot, ne viszonyítsuk semmihez -- csak épp *váltsuk át* a különböző évek között! Hiszen a fenti számok alapján mondhatjuk, hogy ha megszorozzuk a 2005-ös forintértékeket $925/173 = 5,\!35$-tel, akkor megkaptuk a kérdéses összeget, csak épp 2025-ös forintban. (Vagy fordítva, a 2025-ös forintértékeket osztjuk ezzel a számmal, és így átszámolunk mindent 2005-ös forintra; ez mindegy, a lényeg, hogy ugyanarra az évre térjünk át.) Ez a módszer tökéletesen működne akkor, ha az állam *csak* fehér kenyeret venne a beszedett pénzből. A helyzet azonban nem ez. Az ember első gondolata, hogy semmi baj, ott van az infláció, aminek *pont* az a lényege, hogy nem csak egyetlen termék árának alakulását méri, hanem egy egész termékkosárét. Ez nem rossz ötlet, csak az a baj, hogy ez valójában *fogyasztói* termékkosár, tehát még mindig nem az igazi, hiszen az állam néha vesz olyan dolgokat is, mint vadászbombázó vagy merítéklétrás kotrógép, amik nem kifejezetten fogyasztói termékek (és ennek megfelelően az áruk alakulása nincs benne az inflációban). De valójában még a fogyasztói termékkosárban szereplő termékeket sem olyan arányban veszi, mint a fogyasztók, sok esetben nem ugyanazokkal az árakkal szembesül, és akkor a szolgáltatásokról, vagy olyan tételekről, mint az orvosok és pedagógusok bére még nem is beszéltem. Egy szó mint száz, nem biztos, hogy ez a legjobb átváltás, de a helyzet nem fekete-fehér: a pénzbeli juttatásoknál (nyugdíj, családtámogatás) igenis a fogyasztói árindex a megfelelő váltószám.
+
+Általánosságban azonban jobb megoldás az ún. GDP-deflátor (GDP implicit árindex) használata, amely a GDP egész körét figyelembe veszi, így közelebb van a valósághoz. A lenti grafikonnál ennek megfelelően ez az alapértelmezett beállítás. Még jobb lehet a közösségi fogyasztásból számolt implicit árindex használata, de ezt a KSH nem közli készen.
+
+Az alábbi ábra mutatja az egyes területekre költött kiadásokat, de immár átváltott forintban (szép szóval: reálértéken); az átszámítás 2025-ös forintra történt:
+
+```{r}
+category_chart(
+  c("GDP implicit árindex" = "valuedefl", "Fogyasztói árindex" = "valueinfl"),
+  axis_name = c("Kiadás 2025-ös Ft-ban [Mrd Ft]\n(GDP implicit árindex alapján)",
+                "Kiadás 2025-ös Ft-ban [Mrd Ft]\n(fogyasztói árindex alapján)"),
+  unit = "Mrd Ft",
+  var_label = "Az összegek évek közti átváltásának alapja:",
+  title = "A magyar költségvetés kiadásai reálértékben",
+  download_axis_name = TRUE
+)
+```
