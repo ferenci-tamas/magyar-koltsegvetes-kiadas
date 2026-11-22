@@ -27,6 +27,66 @@ CategoryPaths[, `:=`(
 # The dropdowns list the categories in this order
 setorder(CategoryPaths, classification, parent, node)
 
+# The page's own JavaScript, the `kiadas` object that the charts and their filters
+# use (see its parts where they're used), inlined into the head of the page once,
+# however many charts attach it. (htmltools wants a directory for it, but it has no
+# files)
+kiadas_dependency <- htmltools::htmlDependency(
+  "kiadas", "1.0", src = c(file = tempdir()), all_files = FALSE,
+  head = paste0("<script>", r"-(
+window.kiadas = (function() {
+  // Renders the charts `els` that defer() held back: htmlwidgets renders each widget
+  // of echarts4r's class that it hasn't yet. While the page is still being read,
+  // it does so once it's read (on DOMContentLoaded), as it would otherwise also
+  // render the widgets read since that defer() hasn't held back yet, and run the
+  // code of the charts before the elements it uses are read
+  function render(els) {
+    if (!els.length) return;
+    els.forEach(function(el) {
+      observer.unobserve(el);
+      el.classList.replace('kiadas-deferred', 'echarts4r');
+    });
+    if (document.readyState !== 'loading') HTMLWidgets.staticRender();
+  }
+  // Each when it comes within a screen's height of the viewport
+  var observer = window.IntersectionObserver && new IntersectionObserver(function(entries) {
+    render(entries.filter(function(e) { return e.isIntersecting; })
+      .map(function(e) { return e.target; }));
+  }, { rootMargin: '100% 0px' });
+  // And all that are left before printing, as they'd be missing from the printout
+  window.addEventListener('beforeprint', function() {
+    render(Array.from(document.querySelectorAll('.kiadas-deferred')));
+  });
+
+  return {
+    // Renders the chart with the id `id` only once it comes within a screen's height
+    // of the viewport (or before printing). Until then htmlwidgets skips it, as this
+    // takes the class of echarts4r's widgets from it, before htmlwidgets renders the
+    // widgets of the page
+    defer: function(id) {
+      if (!observer) return;
+      var el = document.getElementById(id);
+      el.classList.replace('echarts4r', 'kiadas-deferred');
+      observer.observe(el);
+    },
+    // The regular expression that echarts4r's crosstalk filter matches the keys of
+    // the rows with (see its binding), for the keys that the filters of the
+    // crosstalk group `group` leave, or for every key if there's no filter
+    keyRegex: function(group) {
+      var keys = crosstalk.group(group).var('filter').get();
+      return keys ? '^(' + keys.join('|') + ')$' : '^';
+    },
+    // Calls fn with the keys that the filters of the crosstalk group `group` leave
+    // (null if there's no filter): at once, and whenever they change
+    onFilter: function(group, fn) {
+      new crosstalk.FilterHandle(group).on('change', function(e) { fn(e.value); });
+      fn(crosstalk.group(group).var('filter').get());
+    }
+  };
+})();
+)-", "</script>")
+)
+
 # Radio buttons with the values `choices`, labelled by its names if it has any
 # (as in shiny::radioButtons). `compact = TRUE` shows the choices as a group of
 # small toggle buttons (stretched to the available width) with a small label and
@@ -78,10 +138,11 @@ filter_radio <- function(id, label, sharedData, group, selected = NULL, inline =
   keys <- as.character(sharedData$key())
   map <- setNames(lapply(lvls, \(l) keys[which(values == l)]), lvls)
   
-  # Set the filter only after the widgets have rendered: echarts4r reacts to
-  # filter changes, but ignores a filter that was set before it existed
+  # Set up at once, as the page is read, so that the filter is set before the
+  # charts are rendered (see defer_chart()), which start from it (see
+  # start_filtered()): setting it then redraws nothing
   js <- sprintf(
-    "HTMLWidgets.addPostRenderHandler(function() {
+    "(function() {
       var map = %s;
       var handle = new crosstalk.FilterHandle(%s);
       var inputs = document.getElementById(%s).querySelectorAll('input');
@@ -90,7 +151,7 @@ filter_radio <- function(id, label, sharedData, group, selected = NULL, inline =
       }
       inputs.forEach(function(el) { el.addEventListener('change', update); });
       update();
-    });",
+    })();",
     jsonlite::toJSON(map),
     jsonlite::toJSON(sharedData$groupName(), auto_unbox = TRUE),
     jsonlite::toJSON(id, auto_unbox = TRUE)
@@ -129,8 +190,9 @@ filter_select_dependent <- function(id, label, sharedData, group, parent_id,
   choices <- lapply(rows, \(i) unique(values[i]))
   map <- lapply(rows, \(i) split(keys[i], values[i]))
   
+  # Set up at once, as in filter_radio()
   js <- sprintf(
-    "HTMLWidgets.addPostRenderHandler(function() {
+    "(function() {
       var choices = %s, map = %s, selected = %s;
       var select = document.getElementById(%s);
       var parents = %s.map(function(id) { return document.getElementById(id); });
@@ -160,7 +222,7 @@ filter_select_dependent <- function(id, label, sharedData, group, parent_id,
       });
       parents.forEach(function(el) { el.addEventListener('change', update); });
       update();
-    });",
+    })();",
     jsonlite::toJSON(choices),
     jsonlite::toJSON(map),
     jsonlite::toJSON(selected, auto_unbox = TRUE, null = "null"),
@@ -216,8 +278,9 @@ filter_radio_dependent <- function(id, label, sharedData, group, parent_id,
   })
   map <- lapply(rows, \(i) split(keys[i], values[i]))
   
+  # Set up at once, as in filter_radio()
   js <- sprintf(
-    "HTMLWidgets.addPostRenderHandler(function() {
+    "(function() {
       var contents = %s, map = %s, selected = %s;
       var fieldset = document.getElementById(%s);
       var parents = %s.map(function(id) { return document.getElementById(id); });
@@ -253,7 +316,7 @@ filter_radio_dependent <- function(id, label, sharedData, group, parent_id,
       });
       parents.forEach(function(el) { el.addEventListener('change', update); });
       update();
-    });",
+    })();",
     # What goes inside the fieldset (the legend and the buttons) for each choice of
     # the parents
     jsonlite::toJSON(lapply(fieldsets, \(f) as.character(htmltools::tagList(f$children))),
@@ -646,8 +709,10 @@ add_download_menu <- function(chart, unit, id, choice_id = NULL,
 # `download_axis_name = TRUE`, the downloadable CSV and Excel files start with a
 # line of the name of the y axis, which tells what the values are (e.g. which
 # column is plotted). Each call has its own crosstalk group and element ids (made
-# from `id`), so its controls only affect its own chart. The helpers below make
-# its parts
+# from `id`), so its controls only affect its own chart. The chart is only drawn
+# once it comes near the viewport, and then starts from the current choices of its
+# filters (see defer_chart() and start_filtered()). The helpers below make its
+# parts
 category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
                            stack = FALSE, base_year = NULL, heatmap = FALSE,
                            row_scale = c("sqrt", "linear"), download_axis_name = FALSE,
@@ -715,14 +780,19 @@ category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
     add_base_year_slider(ids, var, base_year) |>
     add_chart_layout(title, ids, data$paths, relative,
                      row_height = if (heatmap) sizes$row,
-                     min_plot_height = if (heatmap) sizes$plot)
+                     min_plot_height = if (heatmap) sizes$plot) |>
+    start_filtered(ids$group)
   
-  htmltools::tagList(
-    category_filters(ids, data$shared_paths, var, var_label, parent_var, parts,
-                     relative),
-    add_download_menu(chart, unit, id = ids$download,
-                      choice_id = if (length(var) > 1) ids$var,
-                      download_axis_name = download_axis_name, row_names = row_names)
+  htmltools::attachDependencies(
+    htmltools::tagList(
+      category_filters(ids, data$shared_paths, var, var_label, parent_var, parts,
+                       relative),
+      add_download_menu(chart, unit, id = ids$download,
+                        choice_id = if (length(var) > 1) ids$var,
+                        download_axis_name = download_axis_name, row_names = row_names),
+      defer_chart(ids$chart)
+    ),
+    kiadas_dependency
   )
 }
 
@@ -748,7 +818,8 @@ category_ids <- function(id) {
 # and in stack mode the columns of their negative parts, `neg_var`. The filters
 # pick the plotted rows by their keys, as the two share the group. The chart only
 # gets the columns it plots (and in a heatmap the spending, by which its rows are
-# sized), since echarts4r embeds every column in the page
+# sized), since echarts4r embeds every column in the page, and those rounded (see
+# round_for_chart())
 category_data <- function(var, group, stack = FALSE, relative = FALSE,
                           heatmap = FALSE) {
   paths <- neg_var <- NULL
@@ -786,6 +857,8 @@ category_data <- function(var, group, stack = FALSE, relative = FALSE,
     } else {
       chart_data[, `:=`(series = paths$series, key = paths$key)]
     }
+    # Before the negative parts are split off (below), so that they're rounded too
+    round_for_chart(chart_data, c(var, if (heatmap) "spending"))
     # In relative mode, also the line that each row is on: its part, for its type
     # of data, all of whose values are divided by the one in the base year
     if (relative) {
@@ -820,13 +893,30 @@ category_data <- function(var, group, stack = FALSE, relative = FALSE,
     # A key is the row number in RawData (the default key of shared_data)
     shared_paths <- crosstalk::SharedData$new(CategoryPaths, key = ~key, group = group)
     shared_data <- crosstalk::SharedData$new(
-      RawData[, c("typeLabel", "yearchr", var), with = FALSE] |>
+      round_for_chart(RawData[, c("typeLabel", "yearchr", var), with = FALSE], var) |>
         dplyr::group_by(typeLabel),
       group = group
     )
   }
   list(shared_paths = shared_paths, shared_data = shared_data, paths = paths,
        neg_var = neg_var)
+}
+
+# Rounds the columns `cols` of the chart data `dt` of category_data() (by
+# reference, so `dt` must be a copy of RawData's columns), which echarts4r would
+# otherwise embed in the page with 16 significant digits: the amounts in Mrd Ft to
+# 4 decimals, the precision of the source data (0.1 million Ft), so they stay
+# exact, and the percentages to 6 significant digits rather than to a number of
+# decimals, so that their ratios to the base year (in relative mode) stay exact
+# enough even for the smallest categories. The tooltips and the axes show fewer
+# digits anyway: only the downloaded data files show the difference. Other
+# columns are left as they are
+round_for_chart <- function(dt, cols) {
+  mrd <- intersect(cols, c("value", "valuedefl", "valueinfl", "spending"))
+  pct <- intersect(cols, c("prop", "propParent", "propgdp"))
+  if (length(mrd)) dt[, (mrd) := lapply(.SD, round, 4), .SDcols = mrd]
+  if (length(pct)) dt[, (pct) := lapply(.SD, signif, 6), .SDcols = pct]
+  dt
 }
 
 # The filters of a category_chart() (see there) of the columns `var`, with the ids
@@ -1238,10 +1328,12 @@ add_category_heatmap <- function(chart, var, axis_name, row_names, group,
           });
         }
 
-        // When the filters change, the heatmap shows only the rows of the parts
-        // left, and the x axis only the years from their first to their last
-        new crosstalk.FilterHandle(data.group).on('change', function(e) {
-          var keys = e.value && new Set(e.value.map(String)), hasYear = {};
+        // The heatmap shows only the rows of the parts that the filters leave, and
+        // the x axis only the years from their first to their last (from the start,
+        // and whenever the filters change). The rows are laid out once the slider
+        // has chosen the base year, which it first does right after this
+        kiadas.onFilter(data.group, function(value) {
+          var keys = value && new Set(value.map(String)), hasYear = {};
           shown = source.filter(function(r) { return !keys || keys.has(String(r.XkeyX)); });
           shown.forEach(function(r) { hasYear[r.yearchr] = true; });
           var covered = years.filter(function(year) { return hasYear[year]; });
@@ -1251,9 +1343,9 @@ add_category_heatmap <- function(chart, var, axis_name, row_names, group,
                                 years.indexOf(covered[covered.length - 1]) + 1)
             }
           });
-          relayout();
+          if (baseYear !== null) relayout();
         });
-        // And when the base year does
+        // And whenever the base year changes
         el.addEventListener('baseyear', function(e) {
           baseYear = e.detail;
           relayout();
@@ -1377,9 +1469,9 @@ add_column_choice <- function(chart, ids, var, axis_name, parent_var, parts = FA
   if (length(var) > 1) {
     # Plots the chosen column, with its axis name. Also run at the start, in case
     # the browser restored an earlier choice when reloading the page. Showing
-    # parts, while the main group dropdown is at "Összesen" (or still empty, before
-    # it's filled), the buttons don't offer the columns relative to the main group:
-    # if one of those is chosen, the first column offered is plotted (and checked)
+    # parts, while the main group dropdown is at "Összesen" (or empty), the buttons
+    # don't offer the columns relative to the main group: if one of those is chosen,
+    # the first column offered is plotted (and checked)
     # instead, until a main group is chosen again. The buttons are hidden while
     # they offer only one column
     chart <- chart |>
@@ -1485,12 +1577,12 @@ add_part_lines <- function(chart, paths, group, stack = FALSE, unit = "") {
           var names = option.series.map(function(s) { return s.name; });
           var palette = option.color, years = option.xAxis[0].data;
 
-          // The chart has a series for every part of every whole, so when the
-          // filters change, this shows only the series left in the legend,
-          // coloured as if they were the only ones, and only the years from their
-          // first to their last
-          new crosstalk.FilterHandle(data.group).on('change', function(e) {
-            var keys = e.value && new Set(e.value.map(String));
+          // The chart has a series for every part of every whole, so this shows
+          // only the series that the filters leave in the legend, coloured as if
+          // they were the only ones, and only the years from their first to their
+          // last (from the start, and whenever the filters change)
+          kiadas.onFilter(data.group, function(value) {
+            var keys = value && new Set(value.map(String));
             var shown = {}, hasYear = {};
             option.dataset[0].source.forEach(function(row) {
               if (keys && !keys.has(String(row.XkeyX))) return;
@@ -1631,16 +1723,18 @@ add_base_year_slider <- function(chart, ids, var, base_year = NULL) {
             slider.dispatchEvent(new Event('input'));
           }
 
-          new crosstalk.FilterHandle(data.group).on('change', function(e) {
-            var keys = e.value && new Set(e.value.map(String)), hasYear = {};
+          // The years that the filters leave (from the start, and whenever they
+          // change). If they leave none, the slider keeps the years it offers or, at
+          // the start, offers all
+          kiadas.onFilter(data.group, function(value) {
+            var keys = value && new Set(value.map(String)), hasYear = {};
             rows.forEach(function(row) {
               if (!keys || keys.has(String(row.XkeyX))) hasYear[row.yearchr] = true;
             });
             var covered = years.filter(function(y) { return hasYear[y]; });
             if (covered.length) offer(covered);
+            else if (!slider.dataset.year) offer(years);
           });
-
-          offer(years);
         }
       ", data = list(id = ids$base, group = ids$group, columns = as.list(unname(var)),
                      year = as.character(base_year)))
@@ -1791,7 +1885,8 @@ add_chart_layout <- function(chart, title, ids, paths = NULL, relative = FALSE,
           if (data.rowHeight) {
             options.graphic = { elements: [{ id: 'colorScale', top: gridTop + titleRoom }] };
           }
-          chart.setOption(options);
+          // Drawn by resize() below, so that the chart is only redrawn once
+          chart.setOption(options, { lazyUpdate: true });
           // The chart grows by the room for the two, so that the plot keeps its
           // size (in a heatmap, the size its rows need). (The size is given
           // explicitly, as ECharts would otherwise keep using the one htmlwidgets
@@ -1800,14 +1895,25 @@ add_chart_layout <- function(chart, title, ids, paths = NULL, relative = FALSE,
           chart.resize({ width: el.clientWidth, height: el.clientHeight });
         }
 
-        main.addEventListener('change', update);
-        second.addEventListener('change', update);
-        if (base) base.addEventListener('input', update);
-        // Also once the filters have changed which items the legend has (showing
-        // parts), which only happens after the change events above
-        new crosstalk.FilterHandle(data.group).on('change', update);
-        window.addEventListener('resize', update);
-        // The legend needs its room even before the dropdowns are filled
+        // Whenever the choices, the filters or the size of the window change, once
+        // in the next frame, however many of these happen before it (one choice
+        // changes the filters that depend on it one after the other), so that it
+        // reads the legend once the filters have changed which items it has
+        var scheduled = false;
+        function schedule() {
+          if (scheduled) return;
+          scheduled = true;
+          requestAnimationFrame(function() {
+            scheduled = false;
+            update();
+          });
+        }
+        main.addEventListener('change', schedule);
+        second.addEventListener('change', schedule);
+        if (base) base.addEventListener('input', schedule);
+        new crosstalk.FilterHandle(data.group).on('change', schedule);
+        window.addEventListener('resize', schedule);
+        // And at once, so that the chart is laid out before it's first shown
         update();
       }
     ", data = list(
@@ -1819,6 +1925,38 @@ add_chart_layout <- function(chart, title, ids, paths = NULL, relative = FALSE,
         lapply(split(setNames(ends$end, ends$second), ends$main), as.list)
       }
     ))
+}
+
+# echarts4r draws a chart of crosstalk data unfiltered at first, as it only applies
+# the filters of its crosstalk group when they change. So this makes a
+# category_chart() (see there) with the crosstalk group `group` start from them
+# instead: they're set up before the chart is rendered (see filter_radio() and
+# defer_chart()), and htmlwidgets evaluates the JS() values just before rendering
+# it. (A dataset of grouped data picks its group before it filters by key)
+start_filtered <- function(chart, group) {
+  reg <- htmlwidgets::JS(sprintf("kiadas.keyRegex(%s)",
+                                 jsonlite::toJSON(group, auto_unbox = TRUE)))
+  chart$x$opts$dataset <- lapply(chart$x$opts$dataset, \(d) {
+    if (isTRUE(startsWith(d$id, "Xtalk"))) {
+      if (is.null(names(d$transform))) {
+        d$transform[[2]]$config$reg <- reg
+      } else {
+        d$transform$config$reg <- reg
+      }
+    }
+    d
+  })
+  chart
+}
+
+# Renders the chart with the id `id` (a category_chart()) only once it comes within a
+# screen's height of the viewport, or before printing (see kiadas.defer() in
+# kiadas_dependency), so that loading the page only draws the charts in view. Comes
+# after the chart and its download menu, which the chart's code uses
+defer_chart <- function(id) {
+  htmltools::tags$script(htmltools::HTML(
+    sprintf("kiadas.defer(%s);", jsonlite::toJSON(id, auto_unbox = TRUE))
+  ))
 }
 ```
 
