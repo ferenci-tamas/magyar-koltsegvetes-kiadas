@@ -216,6 +216,7 @@ ul.task-list li input[type="checkbox"] {
 <p>A COFOG-kategóriák magyar neveit a <a href="https://github.com/ferenci-tamas/magyar-koltsegvetes-kiadas/blob/main/cofog-kod-nev.csv">cofog-kod-nev.csv</a> tartalmazza. Azokban az esetekben, ahol egy kategória a hazai osztályozásban és a COFOG-ban egyaránt szerepelt, a megjelentetett név a hazai volt.</p>
 <p>A teljes kiadási összeget kézzel számoltam ki a főcsoportok összegeként, illetve a főcsoportok értékeit oszlopként is hozzáadtam a táblához (hogy könnyen lehessen arányt számolni).</p>
 <p>Előfordul (igaz, mindössze <code>r sum(RawData$value &lt; 0)</code> esetben), hogy a nemzetközi kimutatásban szereplő kiadási érték negatív; ez meglepő lehet, de meghatározott eseteket, például ha állam értékesít bizonyos vagyontárgyakat, <a href="https://ec.europa.eu/eurostat/statistics-explained/SEPDF/cache/42730.pdf?v=1512967044416454">tényleg így kell</a> rögzíteni. Ilyenkor az összetételi diagramon egy negatív csúcs is lesz, felfelé viszont 100% felé fog menni a görbe (hogy a kettőből kijöjjön a 100%-os összeg).</p>
+<p>A „közösségi fogyasztás” (aminek az implicit árindexe szerepe a reálértékes vizsgálatnál) az Eurostat szerinti P3_S13 kategóriát jelenti.</p>
 
 
 
