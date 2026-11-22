@@ -96,18 +96,20 @@ InflData <- InflData[order(geo, year)]
 InflData[, inflation := cumprod(inflation), .(geo)]
 InflData[, inflation := inflation[match(2025, year)] / inflation, .(geo)]
 
-NAMA10Data <- data.table(eurostat::get_eurostat("nama_10_gdp", filters = list(freq = "A", na_item = "B1GQ"), cache = FALSE))
+NAMA10Data <- data.table(eurostat::get_eurostat("nama_10_gdp", filters = list(freq = "A", na_item = c("B1GQ", "P3_S13")), cache = FALSE))
 saveRDS(NAMA10Data, "NAMA10Data.rds")
 
-DeflatorData <- NAMA10Data[freq == "A" & unit == "PD_PCH_PRE_NAC" & na_item == "B1GQ" & !is.na(values),
-                           .(geo, year = year(time), deflator = 1 + values / 100)]
+DeflatorData <- dcast(NAMA10Data[freq == "A" & unit == "PD_PCH_PRE_NAC" & na_item %in% c("B1GQ", "P3_S13") & !is.na(values)], freq + unit + geo + time ~ na_item, value.var = "values")
+DeflatorData <- DeflatorData[, .(geo, year = year(time), deflatorGDP = 1 + B1GQ / 100, deflatorP3S13 = 1 + P3_S13/100)]
 stopifnot(nrow(DeflatorData[, .(unique(diff(year))), .(geo)][V1 != 1]) == 0)
-DeflatorData <- rbind(DeflatorData[, .(year = min(year) - 1, deflator = 1), .(geo)], DeflatorData)
-if(nrow(DeflatorData[geo == "HU" & year == 2026]) == 0) DeflatorData <- rbind(DeflatorData, data.table(geo = "HU", year = 2026, deflator = 1.040))
-if(nrow(DeflatorData[geo == "HU" & year == 2027]) == 0) DeflatorData <- rbind(DeflatorData, data.table(geo = "HU", year = 2027, deflator = 1.034))
+DeflatorData <- rbind(DeflatorData[, .(year = min(year) - 1, deflatorGDP = 1, deflatorP3S13 = 1), .(geo)], DeflatorData)
+if(nrow(DeflatorData[geo == "HU" & year == 2026]) == 0) DeflatorData <- rbind(DeflatorData, data.table(geo = "HU", year = 2026, deflatorGDP = 1.040, deflatorP3S13 = NA))
+if(nrow(DeflatorData[geo == "HU" & year == 2027]) == 0) DeflatorData <- rbind(DeflatorData, data.table(geo = "HU", year = 2027, deflatorGDP = 1.034, deflatorP3S13 = NA))
 DeflatorData <- DeflatorData[order(geo, year)]
-DeflatorData[, deflator := cumprod(deflator), .(geo)]
-DeflatorData[, deflator := deflator[match(2025, year)] / deflator, .(geo)]
+DeflatorData[, deflatorGDP := cumprod(deflatorGDP), .(geo)]
+DeflatorData[, deflatorP3S13 := cumprod(deflatorP3S13), .(geo)]
+DeflatorData[, deflatorGDP := deflatorGDP[match(2025, year)] / deflatorGDP, .(geo)]
+DeflatorData[, deflatorP3S13 := deflatorP3S13[match(2025, year)] / deflatorP3S13, .(geo)]
 
 GDPData <- NAMA10Data[freq == "A" & unit == "CP_MNAC" & na_item == "B1GQ" & !is.na(values),
                       .(geo, year = year(time), gdp = values)]
@@ -139,7 +141,8 @@ RawData[, prop := value / total * 100]
 RawData[, propParent := value / totalParent * 100]
 RawData[, value := value / 1000]
 RawData[, propgdp := value / (gdp / 1000) * 100]
-RawData[, valuedefl := value * deflator]
+RawData[, valuedeflGDP := value * deflatorGDP]
+RawData[, valuedeflP3S13 := value * deflatorP3S13]
 RawData[, valueinfl := value * inflation]
 
 RawData[, yearchr := as.character(year)]
