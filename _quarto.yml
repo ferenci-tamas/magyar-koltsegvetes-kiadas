@@ -18,7 +18,6 @@ book:
         given: Tamás
         family: Ferenci
         literal: Ferenci Tamás
-      email: tamas.ferenci@medstat.hu
       url: https://www.medstat.hu/
   date: today
   date-format: "YYYY. MMMM D."
