@@ -171,12 +171,14 @@ filter_radio <- function(id, label, sharedData, group, selected = NULL, inline =
 # of `group` occurring in the rows that match the current choice of each parent
 # filter: the filter_radio or filter_select_dependent elements in `parent_id`,
 # with their grouping variables in `parent_group` (a list if there are several).
-# Values are offered in their order of appearance, and a choice keeps only its
-# rows within the parents' choices, so a key may occur in several rows (e.g.
-# once under each classification). `compact = TRUE` makes the dropdown and its
-# label smaller, without margin below, as in filter_radio
-filter_select_dependent <- function(id, label, sharedData, group, parent_id,
-                                    parent_group, selected = NULL, compact = FALSE) {
+# Without parents (the default), it offers the values of all rows. Values are
+# offered in their order of appearance, and a choice keeps only its rows within
+# the parents' choices, so a key may occur in several rows (e.g. once under each
+# classification). `compact = TRUE` makes the dropdown and its label smaller,
+# without margin below, as in filter_radio
+filter_select_dependent <- function(id, label, sharedData, group,
+                                    parent_id = character(), parent_group = list(),
+                                    selected = NULL, compact = FALSE) {
   df <- sharedData$origData()
   eval_group <- \(g) {
     as.character(if (inherits(g, "formula")) eval(g[[2]], df, environment(g)) else g)
@@ -184,8 +186,12 @@ filter_select_dependent <- function(id, label, sharedData, group, parent_id,
   if (!is.list(parent_group)) parent_group <- list(parent_group)
   values <- eval_group(group)
   keys <- as.character(sharedData$key())
-  # Joined the same way as the parents' current choices in the JavaScript below
-  parents <- do.call(paste, c(lapply(parent_group, eval_group), sep = "\u001f"))
+  # Joined the same way as the parents' current choices in the JavaScript below.
+  # Without parents, all rows are under the key "all" (not "", which jsonlite
+  # would turn into a number)
+  parents <- if (length(parent_group)) {
+    do.call(paste, c(lapply(parent_group, eval_group), sep = "\u001f"))
+  } else rep("all", length(values))
   rows <- split(seq_along(values), parents)
   choices <- lapply(rows, \(i) unique(values[i]))
   map <- lapply(rows, \(i) split(keys[i], values[i]))
@@ -199,6 +205,7 @@ filter_select_dependent <- function(id, label, sharedData, group, parent_id,
       var handle = new crosstalk.FilterHandle(%s);
 
       function parentKey() {
+        if (!parents.length) return 'all';
         return parents.map(function(el) {
           return el.tagName === 'SELECT' ? el.value :
             el.querySelector('input:checked').value;
@@ -345,24 +352,51 @@ filter_radio_dependent <- function(id, label, sharedData, group, parent_id,
 # then the plotted column of each series left by the filters and the legend, headed
 # by its name and `unit` (unless it's ""). A heatmap has a column for each of its
 # rows instead, of the values its cells are coloured by, headed by the row's name in
-# `row_names` (by its value on the y axis). The images show the whole legend, even
+# `row_names` (by its value on the y axis). A scatter plot, with `point_columns`,
+# has a row for each of its points instead: the name of its series, then the
+# columns of the data in `point_columns`, headed by their names (which give the
+# units, as `unit` isn't added to them). The images show the whole legend, even
 # where the chart scrolls it, and are taller for it. The files are named after the
-# title of the chart and, if the plotted column is chosen with the radio buttons
-# `choice_id`, the chosen one. With `download_axis_name = TRUE`, both data files
-# start with a line of the name of the y axis, as shown (in one line). The Excel
+# title of the chart and, if it has the radio buttons `choice_id` (which choose the
+# plotted column, or the type of the axes), the chosen one. With
+# `download_axis_name = TRUE`, both data files start with a line of the name of the
+# y axis, as shown (in one line). The Excel
 # file is put together here (as a zip of a few XML files), so that the page needs
 # no library for it. As the result is no longer a widget, this comes after
 # everything else done to the chart
 add_download_menu <- function(chart, unit, id, choice_id = NULL,
-                              download_axis_name = FALSE, row_names = NULL) {
+                              download_axis_name = FALSE, row_names = NULL,
+                              point_columns = NULL) {
   chart <- htmlwidgets::onRender(chart, r"-(
                                  function(el, x, data) {
                                  var chart = echarts.getInstanceByDom(el);
+                                 
+                                 // The rows of the table of a scatter plot, the header first: a row for each
+                                 // point of each scatter series shown (not of the line through the plot), in
+                                 // the order of the series and of their data, with the name of its series,
+                                 // then its values in data.points.columns
+                                 function pointTable(model) {
+                                 var rows = [];
+                                 model.eachSeries(function(series) {
+                                 if (series.subType !== 'scatter') return;
+                                 var points = series.getData();
+                                 for (var i = 0; i < points.count(); i++) {
+                                 var item = points.getRawDataItem(i);
+                                 rows.push([series.name].concat(data.points.columns.map(function(column) {
+                                 var value = item[column];
+                                 // A year as a number, so that Excel takes it for one
+                                 return value == null ? undefined : isNaN(value) ? value : Number(value);
+                                 })));
+                                 }
+                                 });
+                                 return [['Kategória'].concat(data.points.headers)].concat(rows);
+                                 }
                                  
                                  // The rows of the table, the header first, with the x values in their order
                                  // on the axis, and an empty cell (undefined) where a series has no value
                                  function table() {
                                  var model = chart.getModel(), axis = model.getComponent('xAxis');
+                                 if (data.points) return pointTable(model);
                                  var header = [axis.get('name')], rows = {}, columnOf = {};
                                  // Skips the series hidden with the legend; those filtered out have no data.
                                  // Series of the same name (in stack mode, the negative and the positive
@@ -644,7 +678,11 @@ add_download_menu <- function(chart, unit, id, choice_id = NULL,
                                  });
                                  }
   )-", data = list(unit = unit, menuId = id, choiceId = choice_id,
-                   downloadAxisName = download_axis_name, rowNames = row_names))
+                   downloadAxisName = download_axis_name, rowNames = row_names,
+                   points = if (!is.null(point_columns)) {
+                     list(headers = as.list(names(point_columns)),
+                          columns = as.list(unname(point_columns)))
+                   }))
   
   item <- \(format, label) htmltools::tags$li(htmltools::tags$button(
     # Taller than Bootstrap's default, to be easier to tap
@@ -1151,13 +1189,15 @@ add_category_heatmap <- function(chart, var, axis_name, row_names, group,
     renderItem = htmlwidgets::JS("function() { return null; }")
   ))
   # The legend lists series without data, one for each name, without icons, so one
-  # name in each line, so that it's clear where one ends and the next one starts
+  # name in each line, so that it's clear where one ends and the next one starts.
+  # Its names can be switched off, as ECharts makes the items of a legend ignore the
+  # mouse otherwise, but they're switched back on at once (see below)
   full_names <- unique(unlist(row_names, use.names = FALSE))
   chart$x$opts$series <- c(chart$x$opts$series, lapply(full_names, \(name) {
     list(name = name, type = "line", data = list())
   }))
   chart$x$opts$legend <- list(data = as.list(full_names), orient = "vertical",
-                              icon = "none", itemWidth = 0, selectedMode = FALSE)
+                              icon = "none", itemWidth = 0)
   chart$x$opts$visualMap <- list(list(
     type = "piecewise", show = FALSE, seriesIndex = 0, dimension = var[[1]],
     pieces = pieces
@@ -1377,22 +1417,31 @@ add_category_heatmap <- function(chart, var, axis_name, row_names, group,
             chart.dispatchAction({ type: type, seriesIndex: 0, dataIndex: cells });
           });
         });
+
+        // A name switched off in the legend is switched back on at once, as its
+        // series has no cells to hide
+        chart.on('legendselectchanged', function(e) {
+          if (named.has(e.name) && !e.selected[e.name]) {
+            chart.dispatchAction({ type: 'legendSelect', name: e.name });
+          }
+        });
       }
     ", data = list(group = group, codes = as.list(names(row_names)), names = row_names,
                    unit = unit_suffix, digits = fraction_digits, scale = scale,
                    sizes = sizes, rowScale = row_scale))
 }
 
-# The credit below a category_chart() and the x axis, of the years
-add_chart_frame <- function(chart) {
+# The credit below a category_chart() or a plan_actual_chart() and the x axis,
+# named `x_name` (by default as the axis of the years)
+add_chart_frame <- function(chart, x_name = "Év") {
   chart <- chart |>
     e_title(subtext = "Ferenci Tamás (medstat.hu)", bottom = 0, right = 10,
             sublink = "https://www.medstat.hu/", subtarget = "blank") |>
-    # The first and last years are always labelled, not only when ECharts' step
-    # between labels happens to land on them. A label that would collide with
-    # them is hidden instead (with hideOverlap, also one that would come within a
-    # few pixels)
-    e_x_axis(name = "Év",
+    # The first and last years (or values) are always labelled, not only when
+    # ECharts' step between labels happens to land on them. A label that would
+    # collide with them is hidden instead (with hideOverlap, also one that would
+    # come within a few pixels)
+    e_x_axis(name = x_name,
              axisLabel = list(showMinLabel = TRUE, showMaxLabel = TRUE,
                               hideOverlap = TRUE))
   # ECharts shows the tooltip where it last was (at first, the middle of the chart)
@@ -1402,15 +1451,20 @@ add_chart_frame <- function(chart) {
   htmlwidgets::onRender(chart, "function(el) { el.style.overflow = 'hidden'; }")
 }
 
-# For screen readers, a category_chart() (see there) is an image, described by its
-# title, its axes and the values shown, formatted as in the tooltip (with
-# `unit_suffix` and at most `fraction_digits` decimals). `type` names the kind of
-# chart. A heatmap's values are listed by row, under the rows' names in `row_names`
-# (by their values on the y axis). (ECharts' own description, with e_aria(), would
-# be in English and list every column of the data, for every series, even the ones
+# For screen readers, a category_chart() or a plan_actual_chart() (see there) is
+# an image, described by its title, its axes and the values shown, formatted as in
+# the tooltip (with `unit_suffix` and at most `fraction_digits` decimals). `type`
+# names the kind of chart (or, as a list, the kind for each type of the x axis, as
+# a scatter plot's axes may be linear or logarithmic). A heatmap's values are
+# listed by row, under the rows'
+# names in `row_names` (by their values on the y axis). A scatter plot's, with
+# `points`, are listed by point, under the name of its series: each labelled by
+# its column points$label in the data, with its values on the x and the y axis,
+# named points$x and points$y. (ECharts' own description, with e_aria(), would be
+# in English and list every column of the data, for every series, even the ones
 # filtered out)
 add_chart_description <- function(chart, type, unit_suffix, fraction_digits,
-                                  row_names = NULL) {
+                                  row_names = NULL, points = NULL) {
   chart |>
     htmlwidgets::onRender("
       function(el, x, data) {
@@ -1421,14 +1475,34 @@ add_chart_description <- function(chart, type, unit_suffix, fraction_digits,
         });
         el.setAttribute('role', 'img');
 
+        // The points of a scatter plot, of each scatter series shown (not of the
+        // line through the plot), each labelled, with its values on the two axes
+        function describePoints(model) {
+          var described = [];
+          model.eachSeries(function(series) {
+            if (series.subType !== 'scatter') return;
+            var points = series.getData(), values = [];
+            var x = points.mapDimension('x'), y = points.mapDimension('y');
+            for (var i = 0; i < points.count(); i++) {
+              values.push(points.getRawDataItem(i)[data.points.label] + ': ' +
+                          data.points.x + ' ' + format.format(points.get(x, i)) +
+                          data.unit + ', ' + data.points.y + ' ' +
+                          format.format(points.get(y, i)) + data.unit);
+            }
+            if (values.length) described.push(series.name + ': ' + values.join('; '));
+          });
+          return described;
+        }
+
         // After every redraw, so whenever the filters, the plotted column, the
         // title or the legend change
         chart.on('finished', function() {
           var model = chart.getModel(), parts = [];
           model.eachComponent('title', function(title) { parts.push(title.get('text')); });
+          var xAxis = model.getComponent('xAxis');
           var yName = model.getComponent('yAxis').get('name');
-          parts.push(data.type,
-                     'Vízszintes tengely: ' + model.getComponent('xAxis').get('name'));
+          parts.push(typeof data.type === 'string' ? data.type : data.type[xAxis.get('type')],
+                     'Vízszintes tengely: ' + xAxis.get('name'));
           // A heatmap's y axis is named after what its colours show
           if (data.rowNames) {
             parts.push('Függőleges tengely: kategóriák', 'A cellák színe: ' + yName);
@@ -1438,34 +1512,38 @@ add_chart_description <- function(chart, type, unit_suffix, fraction_digits,
           // Skips the series hidden with the legend; those filtered out have no data.
           // Series of the same name (in stack mode, the negative and the positive
           // parts of a category) are added up. A heatmap's values, those its cells
-          // are coloured by, are listed by row
-          var sums = new Map();
-          model.eachSeries(function(series) {
-            var points = series.getData(), heatmap = series.id === 'heatmap';
-            var y = points.mapDimension(heatmap ? 'value' : 'y');
-            for (var i = 0; i < points.count(); i++) {
-              var x = points.getName(i), value = points.get(y, i);
-              if (isNaN(value)) continue;
-              var name = heatmap ?
-                data.rowNames[points.getRawDataItem(i)[points.mapDimension('y')]] :
-                series.name;
-              var values = sums.get(name) || new Map();
-              values.set(x, (values.get(x) || 0) + value);
-              sums.set(name, values);
-            }
-          });
-          sums.forEach(function(values, name) {
-            parts.push(name + ': ' + Array.from(values, function(entry) {
-              return entry[0] + ': ' + format.format(entry[1]) + data.unit;
-            }).join('; '));
-          });
+          // are coloured by, are listed by row, and a scatter plot's by point
+          if (data.points) {
+            parts.push.apply(parts, describePoints(model));
+          } else {
+            var sums = new Map();
+            model.eachSeries(function(series) {
+              var points = series.getData(), heatmap = series.id === 'heatmap';
+              var y = points.mapDimension(heatmap ? 'value' : 'y');
+              for (var i = 0; i < points.count(); i++) {
+                var x = points.getName(i), value = points.get(y, i);
+                if (isNaN(value)) continue;
+                var name = heatmap ?
+                  data.rowNames[points.getRawDataItem(i)[points.mapDimension('y')]] :
+                  series.name;
+                var values = sums.get(name) || new Map();
+                values.set(x, (values.get(x) || 0) + value);
+                sums.set(name, values);
+              }
+            });
+            sums.forEach(function(values, name) {
+              parts.push(name + ': ' + Array.from(values, function(entry) {
+                return entry[0] + ': ' + format.format(entry[1]) + data.unit;
+              }).join('; '));
+            });
+          }
           var label = parts.filter(Boolean).join('. ').replace(/\\n/g, ' ') + '.';
           // The chart is also redrawn on hover
           if (label !== el.getAttribute('aria-label')) el.setAttribute('aria-label', label);
         });
       }
     ", data = list(type = type, unit = unit_suffix, digits = fraction_digits,
-                   rowNames = row_names))
+                   rowNames = row_names, points = points))
 }
 
 # With several columns in `var`, a category_chart() (see there) plots the one
@@ -1538,18 +1616,11 @@ add_column_choice <- function(chart, ids, var, axis_name, parent_var, parts = FA
 
 # Showing parts (`paths`, see category_data()), a category_chart() (see there)
 # names its lines or stacked areas after their categories, colours them, and shows
-# only those that the filters of the crosstalk group `group` leave (see below). With
+# only those that the filters of the crosstalk group `group` leave (see
+# add_part_legend()), and only the years from their first to their last. With
 # `unit = "%"`, the stacked areas are kept within 0 and 100% (see below)
 add_part_lines <- function(chart, paths, group, stack = FALSE, unit = "") {
   if (!is.null(paths)) {
-    # echarts4r names each series after its group, but it should show the label
-    # of its category (which has a series in each classification it's in)
-    ids <- vapply(chart$x$opts$series, \(s) s$name, "")
-    labels <- as.character(paths$nameLabel[match(ids, paths$series)])
-    chart$x$opts$series <- Map(\(s, label) modifyList(s, list(name = label)),
-                               chart$x$opts$series, labels)
-    chart$x$opts$legend$data <- as.list(unique(labels))
-    
     if (stack && unit == "%") {
       # The positive parts of a whole stack up to 100%, but rounding errors can put
       # the top a hair above it, and negative parts too small to see push it up as
@@ -1573,56 +1644,25 @@ add_part_lines <- function(chart, paths, group, stack = FALSE, unit = "") {
     }
     
     chart <- chart |>
-      # ECharts' default palette has 9 colours, so this adds 7 for the 16 Hungarian
-      # main groups, each picked (among colours of moderate lightness and chroma)
-      # to differ as much as possible from all the colours before it, by CIEDE2000
-      e_color(c("#5070dd", "#b6d634", "#505372", "#ff994d", "#0ca8df", "#ffd10a",
-                "#fb628b", "#785db0", "#3fbe95", "#666018", "#a04024", "#c3b0e4",
-                "#ab2965", "#167a4e", "#ae9d69", "#027588")) |>
+      add_part_legend(paths, group) |>
       htmlwidgets::onRender("
         function(el, x, data) {
           var chart = echarts.getInstanceByDom(el);
-          var option = chart.getOption();
-          var names = option.series.map(function(s) { return s.name; });
-          var palette = option.color, years = option.xAxis[0].data;
+          var option = chart.getOption(), years = option.xAxis[0].data;
 
-          // The chart has a series for every part of every whole, so this shows
-          // only the series that the filters leave in the legend, coloured as if
-          // they were the only ones, and only the years from their first to their
-          // last (from the start, and whenever the filters change)
+          // Only the years from the first to the last that the filters leave (from
+          // the start, and whenever the filters change)
           kiadas.onFilter(data.group, function(value) {
-            var keys = value && new Set(value.map(String));
-            var shown = {}, hasYear = {};
+            var keys = value && new Set(value.map(String)), hasYear = {};
             option.dataset[0].source.forEach(function(row) {
-              if (keys && !keys.has(String(row.XkeyX))) return;
-              shown[row.series] = true;
-              hasYear[row.yearchr] = true;
-            });
-            // Each name once, as in stack mode a category has a series for its
-            // negative and one for its positive parts
-            var legend = [];
-            names.forEach(function(name, i) {
-              if (shown[data.series[i]] && legend.indexOf(name) < 0) legend.push(name);
+              if (!keys || keys.has(String(row.XkeyX))) hasYear[row.yearchr] = true;
             });
             var covered = years.filter(function(year) { return hasYear[year]; });
-            var color = {};
-            legend.forEach(function(name, i) {
-              color[name] = palette[i % palette.length];
-            });
             chart.setOption({
-              // Stacked, in the order of the areas from the top of the stack down
-              // (though coloured from the bottom up)
-              legend: { data: option.series[0].stack ? legend.slice().reverse() : legend },
               xAxis: {
                 data: years.slice(years.indexOf(covered[0]),
                                   years.indexOf(covered[covered.length - 1]) + 1)
-              },
-              // Also the series of the same category in the other
-              // classification, as the legend takes the colour of the first
-              // series of a name
-              series: names.map(function(name) {
-                return color[name] ? { color: color[name] } : {};
-              })
+              }
             });
           });
 
@@ -1662,9 +1702,69 @@ add_part_lines <- function(chart, paths, group, stack = FALSE, unit = "") {
             chart.dispatchAction({ type: 'downplay', seriesName: p.seriesName });
           });
         }
-      ", data = list(group = group, series = as.list(ids)))
+      ", data = list(group = group))
   }
   chart
+}
+
+# Names the series of a chart of parts (`paths`: see category_data(), or the points
+# of a plan_actual_chart(), see plan_actual_data()), one for each part in each
+# classification it's in, after their categories, and colours them. As the chart
+# has a series for every part of every whole, the legend only lists the series
+# that the filters of the crosstalk group `group` leave, coloured as if they were
+# the only ones (from the start, and whenever the filters change). Series added
+# after this (as the line of a plan_actual_chart()) are left out of the legend, and
+# keep their own colours
+add_part_legend <- function(chart, paths, group) {
+  # echarts4r names each series after its group, but it should show the label
+  # of its category (which has a series in each classification it's in)
+  ids <- vapply(chart$x$opts$series, \(s) s$name, "")
+  labels <- as.character(paths$nameLabel[match(ids, paths$series)])
+  chart$x$opts$series <- Map(\(s, label) modifyList(s, list(name = label)),
+                             chart$x$opts$series, labels)
+  chart$x$opts$legend$data <- as.list(unique(labels))
+
+  chart |>
+    # ECharts' default palette has 9 colours, so this adds 7 for the 16 Hungarian
+    # main groups, each picked (among colours of moderate lightness and chroma)
+    # to differ as much as possible from all the colours before it, by CIEDE2000
+    e_color(c("#5070dd", "#b6d634", "#505372", "#ff994d", "#0ca8df", "#ffd10a",
+              "#fb628b", "#785db0", "#3fbe95", "#666018", "#a04024", "#c3b0e4",
+              "#ab2965", "#167a4e", "#ae9d69", "#027588")) |>
+    htmlwidgets::onRender("
+      function(el, x, data) {
+        var chart = echarts.getInstanceByDom(el);
+        var option = chart.getOption(), palette = option.color;
+        var names = option.series.map(function(s) { return s.name; });
+
+        kiadas.onFilter(data.group, function(value) {
+          var keys = value && new Set(value.map(String)), shown = {};
+          option.dataset[0].source.forEach(function(row) {
+            if (!keys || keys.has(String(row.XkeyX))) shown[row.series] = true;
+          });
+          // Each name once, as in stack mode a category has a series for its
+          // negative and one for its positive parts
+          var legend = [];
+          names.forEach(function(name, i) {
+            if (shown[data.series[i]] && legend.indexOf(name) < 0) legend.push(name);
+          });
+          var color = {};
+          legend.forEach(function(name, i) {
+            color[name] = palette[i % palette.length];
+          });
+          chart.setOption({
+            // Stacked, in the order of the areas from the top of the stack down
+            // (though coloured from the bottom up)
+            legend: { data: option.series[0].stack ? legend.slice().reverse() : legend },
+            // Also the series of the same category in the other classification,
+            // as the legend takes the colour of the first series of a name
+            series: names.map(function(name) {
+              return color[name] ? { color: color[name] } : {};
+            })
+          });
+        });
+      }
+    ", data = list(group = group, series = as.list(ids)))
 }
 
 # In relative mode (with a `base_year`), a category_chart() (see there) divides
@@ -1755,15 +1855,24 @@ add_base_year_slider <- function(chart, ids, var, base_year = NULL) {
 # of its filters (see category_ids() for `ids`), and the room for it, for the legend
 # and, in a heatmap, for its rows, `row_height` px each on average, with the plot
 # at least `min_plot_height` px tall: see below. `paths` are the parts shown, if any
-# (see category_data())
+# (see category_data()). With `second = FALSE`, as in a plan_actual_chart(), whose
+# title only follows the main group dropdown, `paths` are the rows of its choices
+# (`choices`, see plan_actual_data()), and the title only names the main group
+# (unless it's "Összesen"). The chart is also laid out again whenever the controls
+# with the ids `watch_ids` change, as they change the legend (as the radio buttons
+# of the colouring of a plan_actual_chart())
 add_chart_layout <- function(chart, title, ids, paths = NULL, relative = FALSE,
-                             row_height = NULL, min_plot_height = 0) {
+                             row_height = NULL, min_plot_height = 0, second = TRUE,
+                             watch_ids = NULL) {
   parts <- !is.null(paths)
   # The end of the title for each choice of the main group dropdown and of the
-  # subgroup dropdown or, showing parts, of the type
+  # subgroup dropdown or, showing parts, of the type (or for each choice of the
+  # main group dropdown alone, "" for "Összesen")
   if (!is.null(title)) {
     name_of <- \(label) RawData$name[match(label, RawData$nameLabel)]
-    ends <- if (parts) {
+    ends <- if (!second) {
+      unique(paths[, .(main)])[, end := fifelse(main == "Összesen", "", name_of(main))]
+    } else if (parts) {
       unique(paths[, .(main, second = as.character(typeLabel))])[, end := fifelse(
         main == "Összesen", second, paste0(name_of(main), ", ", second)
       )]
@@ -1786,8 +1895,9 @@ add_chart_layout <- function(chart, title, ids, paths = NULL, relative = FALSE,
       function(el, x, data) {
         var chart = echarts.getInstanceByDom(el);
         var main = document.getElementById(data.mainId);
-        // The subgroup dropdown or, showing parts, the radio buttons of the type
-        var second = document.getElementById(data.secondId);
+        // The subgroup dropdown or, showing parts, the radio buttons of the type, if
+        // the chart has a second filter
+        var second = data.secondId && document.getElementById(data.secondId);
         // In relative mode, the slider of the base year
         var base = data.baseId && document.getElementById(data.baseId);
         var download = document.getElementById(data.downloadId);
@@ -1871,18 +1981,23 @@ add_chart_layout <- function(chart, title, ids, paths = NULL, relative = FALSE,
           var legendRoom = legendExtra(), titleRoom = 0;
           var rowsRoom = data.rowHeight ? rowsExtra() : 0;
           var options = { grid: { bottom: gridBottom + legendRoom } };
-          var end = data.title && (data.ends[main.value] || {})[second.tagName === 'SELECT' ?
-            second.value : second.querySelector('input:checked').value];
+          // For the choices of the two filters, or of the main group dropdown alone
+          // (empty if the title then has no end)
+          var end = data.title && (second ?
+            (data.ends[main.value] || {})[second.tagName === 'SELECT' ?
+              second.value : second.querySelector('input:checked').value] :
+            data.ends[main.value]);
           // Unless the chart has no title, or the dropdowns aren't filled yet
-          if (end) {
-            if (base) end += ', bázisév: ' + base.dataset.year;
+          if (end != null) {
+            var text = data.title + (end ? ': ' + end : '');
+            if (base) text += ', bázisév: ' + base.dataset.year;
             // Smaller on phones, where the title takes several lines anyway
             var fontSize = el.clientWidth < 500 ? 14 : 18, lineHeight = fontSize + 6;
             context.font = 'bold ' + fontSize + 'px ' + option.textStyle.fontFamily;
             // Clear of the download button in the top right corner, by as much as
             // the title is from the left edge
             var right = download.getBoundingClientRect().left - el.getBoundingClientRect().left;
-            var lines = wrap(data.title + ': ' + end, right - 20);
+            var lines = wrap(text, right - 20);
             titleRoom = lines.length * lineHeight;
             options.title = {
               id: 'category', text: lines.join('\\n'), left: 10, top: 5,
@@ -1894,14 +2009,19 @@ add_chart_layout <- function(chart, title, ids, paths = NULL, relative = FALSE,
           if (data.rowHeight) {
             options.graphic = { elements: [{ id: 'colorScale', top: gridTop + titleRoom }] };
           }
-          // Drawn by resize() below, so that the chart is only redrawn once
+          // Drawn by resize() below, or else in the next frame, so that the chart is
+          // only redrawn once
           chart.setOption(options, { lazyUpdate: true });
           // The chart grows by the room for the two, so that the plot keeps its
           // size (in a heatmap, the size its rows need). (The size is given
           // explicitly, as ECharts would otherwise keep using the one htmlwidgets
-          // last gave it when the window was resized)
+          // last gave it when the window was resized.) Only resized if its size
+          // changed, as ECharts then forgets what the mouse is over, and wouldn't end
+          // the highlighting that hovering it started when the mouse leaves it
           el.style.height = height + titleRoom + legendRoom + rowsRoom + 'px';
-          chart.resize({ width: el.clientWidth, height: el.clientHeight });
+          if (chart.getWidth() !== el.clientWidth || chart.getHeight() !== el.clientHeight) {
+            chart.resize({ width: el.clientWidth, height: el.clientHeight });
+          }
         }
 
         // Whenever the choices, the filters or the size of the window change, once
@@ -1918,8 +2038,11 @@ add_chart_layout <- function(chart, title, ids, paths = NULL, relative = FALSE,
           });
         }
         main.addEventListener('change', schedule);
-        second.addEventListener('change', schedule);
+        if (second) second.addEventListener('change', schedule);
         if (base) base.addEventListener('input', schedule);
+        data.watchIds.forEach(function(id) {
+          document.getElementById(id).addEventListener('change', schedule);
+        });
         new crosstalk.FilterHandle(data.group).on('change', schedule);
         window.addEventListener('resize', schedule);
         // And at once, so that the chart is laid out before it's first shown
@@ -1927,11 +2050,14 @@ add_chart_layout <- function(chart, title, ids, paths = NULL, relative = FALSE,
       }
     ", data = list(
       title = title, mainId = ids$main,
-      secondId = if (parts) ids$type else ids$sub, baseId = if (relative) ids$base,
+      secondId = if (second) { if (parts) ids$type else ids$sub },
+      baseId = if (relative) ids$base,
       downloadId = ids$download, group = ids$group, rowHeight = row_height,
-      minPlotHeight = min_plot_height,
+      minPlotHeight = min_plot_height, watchIds = as.list(watch_ids),
       ends = if (!is.null(title)) {
-        lapply(split(setNames(ends$end, ends$second), ends$main), as.list)
+        if (second) {
+          lapply(split(setNames(ends$end, ends$second), ends$main), as.list)
+        } else as.list(setNames(ends$end, ends$main))
       }
     ))
 }
@@ -1967,9 +2093,524 @@ defer_chart <- function(id) {
     sprintf("kiadas.defer(%s);", jsonlite::toJSON(id, auto_unbox = TRUE))
   ))
 }
+
+# The filters and the scatter plot of the planned (on the x axis) against the
+# actual (on the y axis) spending in "Eredmények", in the column `var` of RawData,
+# with a point for each category in each year: for the main groups if the main
+# group dropdown is at "Összesen", else for the subgroups of the chosen main group
+# or, if it has none, for the main group itself, coloured by category. Only the
+# Hungarian classification has both types of data (COFOG's data are all actual),
+# and only the years with both count. The dashed line marks where the actual
+# spending equals the plan. `axis_name` names the x and the y axis, and `unit`
+# (unless it's "") follows the values in the tooltip, which also gives the
+# deviation from the plan. Radio buttons switch both axes between linear and
+# logarithmic (at first logarithmic with `log_scale = TRUE`): on log axes,
+# categories of very different sizes all show, and the vertical distance from the
+# line shows the relative deviation, but the points whose plan or actual value
+# isn't positive are left out. Further radio buttons colour the points by category
+# (at first) or by year (see add_plan_actual_colors()). The chart has no title if
+# `title` is NULL, else `title` followed by the name of the chosen main group
+# (unless it's "Összesen").
+# As in category_chart(), each call has its own crosstalk group and element ids
+# (made from `id`), and the chart is only drawn once it comes near the viewport,
+# starting from the choices of its filters. The helpers below and those of
+# category_chart() make its parts
+plan_actual_chart <- function(axis_name, unit, title = NULL, var = "value",
+                              log_scale = TRUE, id = paste0(var, "_plan_actual")) {
+  ids <- c(category_ids(id), scale = paste0(id, "_scale_filter"),
+           color = paste0(id, "_color_choice"))
+  # The choices of the radio buttons of the axes
+  scales <- c(linear = "Lineáris", log = "Logaritmikus")
+  data <- plan_actual_data(var, ids$group, scales)
+  # As in category_chart()
+  unit_suffix <- if (unit %in% c("", "%")) unit else paste0(" ", unit)
+  # The names of the two types of data, as elsewhere on the page
+  type_labels <- as.character(
+    RawData$typeLabel[match(c("original_plan", "actual"), RawData$type)]
+  )
+
+  chart <- data$shared_data |>
+    # hoverLayerThreshold as in category_chart(). Not reordered by the x values (the
+    # plans), so that the downloaded data and the description list the points of
+    # each category by year
+    e_chart(plan, hoverLayerThreshold = 1e6, elementId = ids$chart, reorder = FALSE) |>
+    e_scatter_("actual", symbol_size = 8, emphasis = list(focus = "series")) |>
+    # Before the line is added (see add_plan_actual_axes()), which isn't a category
+    add_part_legend(data$points, ids$group) |>
+    add_chart_frame(x_name = axis_name[[1]]) |>
+    add_plan_actual_axes(axis_name[[2]], type_labels, unit_suffix, ids, scales[["log"]],
+                         log_scale) |>
+    add_plan_actual_colors(ids, sort(unique(data$points$yearchr))) |>
+    add_chart_description(
+      # For each type of the axes
+      lapply(c(log = "logaritmikus", value = "lineáris"), \(type) paste0(
+        "Pontdiagram ", type, " tengelyekkel, a szaggatott vonalon a tényleges ",
+        "érték megegyezik a tervezettel"
+      )),
+      unit_suffix, 1L,
+      points = list(label = "yearchr", x = type_labels[[1]], y = type_labels[[2]])
+    ) |>
+    add_chart_layout(title, ids, data$choices, second = FALSE, watch_ids = ids$color) |>
+    start_filtered(ids$group)
+
+  htmltools::attachDependencies(
+    htmltools::tagList(
+      plan_actual_filters(ids, data$shared_points, data$shared_scales,
+                          scales[[if (log_scale) "log" else "linear"]]),
+      add_download_menu(
+        chart, unit, id = ids$download, choice_id = ids$scale,
+        point_columns = setNames(
+          c("yearchr", "plan", "actual"),
+          c("Év", paste0(type_labels, if (unit != "") paste0(" [", unit, "]")))
+        )
+      ),
+      defer_chart(ids$chart)
+    ),
+    kiadas_dependency
+  )
+}
+
+# The data of a plan_actual_chart() (see there) of the column `var` of RawData, in
+# the crosstalk group `group`: `points`, a row for each Hungarian category (its
+# `code` and `nameLabel`) in each year (`yearchr`) with both a plan (`plan`) and an
+# actual value (`actual`), with its main group (`main`, as in category_data():
+# "Összesen" for the main groups), and a series for each category, in the order of
+# the codes, named by its number, as in category_data(); `choices`, a row for each
+# choice of the main group dropdown (`main`) and each point it shows (`key`); and
+# in the group, `shared_points` of the choices and `shared_scales` of the radio
+# buttons of the axes for the filters, and `shared_data` for the chart, which pick
+# the points by their keys, their row numbers in `points`. The radio buttons offer
+# the values of `scales`, its "linear" one for all the points, its "log" one for
+# those with a positive plan and actual value, which log axes can show. The chart
+# only gets the columns it shows, rounded (see round_for_chart())
+plan_actual_data <- function(var, group, scales) {
+  types <- c(original_plan = "plan", actual = "actual")
+  long <- CategoryPaths[
+    classification == "Magyar" & RawData$type[key] %chin% names(types), .(
+      main = fifelse(sub == "Összesen", "Összesen", main), nameLabel, code = node,
+      yearchr = RawData$yearchr[key], type = unname(types[RawData$type[key]]),
+      value = RawData[[var]][key]
+    )
+  ]
+  # Named as the column, which tells how it's rounded
+  setnames(long, "value", var)
+  round_for_chart(long, var)
+  points <- dcast(long, main + nameLabel + code + yearchr ~ type, value.var = var)
+  points <- points[!is.na(plan) & !is.na(actual)]
+  setorder(points, code, yearchr)
+  points[, `:=`(
+    key = .I,
+    series = factor(code, levels = unique(code), labels = seq_along(unique(code)))
+  )]
+
+  # "Összesen" shows the main groups, and a main group its subgroups or, if it has
+  # none, itself, whose points thus come under two choices. "Összesen" first in
+  # the dropdown, then the main groups in the order of their codes
+  parents <- unique(points$main)
+  choices <- rbind(
+    points[, .(main, code, key)],
+    points[main == "Összesen" & !as.character(nameLabel) %chin% parents,
+           .(main = as.character(nameLabel), code, key)]
+  )[order(main != "Összesen", code), .(main, key)]
+  # Offered in the order of `scales`
+  axes <- rbind(
+    points[, .(scale = scales[["linear"]], key)],
+    points[plan > 0 & actual > 0, .(scale = scales[["log"]], key)]
+  )[, scale := factor(scale, levels = unname(scales))]
+
+  list(
+    points = points,
+    choices = choices,
+    shared_points = crosstalk::SharedData$new(choices, key = ~key, group = group),
+    shared_scales = crosstalk::SharedData$new(axes, key = ~key, group = group),
+    shared_data = crosstalk::SharedData$new(
+      points[, .(series, yearchr, plan, actual)] |> dplyr::group_by(series),
+      key = as.character(points$key), group = group
+    )
+  )
+}
+
+# The filters of a plan_actual_chart() (see there), with the ids `ids` (see
+# plan_actual_chart()), laid out as in category_filters(): the main group dropdown,
+# on the rows of `shared_points`, at "Összesen" at first, and the radio buttons of
+# the type of the axes, on the rows of `shared_scales` (see plan_actual_data()), at
+# `scale` at first, and those of the colouring, by category at first
+plan_actual_filters <- function(ids, shared_points, shared_scales, scale) {
+  htmltools::div(
+    class = "d-flex flex-wrap align-items-end row-gap-2 mb-3",
+    # Not Bootstrap's column-gap-3, as in category_filters()
+    style = "column-gap: 1rem",
+    htmltools::div(
+      style = "flex: 1 1 20rem",
+      filter_select_dependent(
+        id = ids$main,
+        label = "Főcsoport:",
+        sharedData = shared_points,
+        group = ~main,
+        selected = "Összesen",
+        compact = TRUE
+      )
+    ),
+    htmltools::div(
+      # Full width on phones, where it's alone in its row
+      class = "flex-grow-1 flex-md-grow-0",
+      filter_radio(
+        id = ids$scale,
+        label = "Tengelyek:",
+        sharedData = shared_scales,
+        group = ~scale,
+        selected = scale,
+        compact = TRUE
+      )
+    ),
+    htmltools::div(
+      class = "flex-grow-1 flex-md-grow-0",
+      # Not a filter: it only changes the colours (see add_plan_actual_colors())
+      radio_buttons(id = ids$color, label = "Színezés:",
+                    choices = c("Kategória" = "category", "Év" = "year"), compact = TRUE)
+    )
+  )
+}
+
+# The axes, the tooltip and the dashed line of a plan_actual_chart() (see there),
+# with the ids `ids` (see there): the x axis of the plans (named by
+# add_chart_frame()), and the y axis, named `y_name`, of the actual values, both
+# logarithmic if the radio buttons of the axes are at `log_value`, else linear (at
+# first as `log_scale` says, until the buttons are read). Both run over the same
+# range, so that the line, where the actual value equals the plan, runs from corner
+# to corner: from the smallest to the largest value of the points that the filters
+# leave (from the start, and whenever they or the type of the axes change), on log
+# axes widened to 1, 2 or 5 times a power of 10, on linear ones from 0 (unless a
+# value is negative) to the first tick at or above the largest value, with the
+# ticks spaced as ECharts would space them. The tooltip shows the hovered point's
+# category and year, its plan and actual value (named by `type_labels`, followed by
+# `unit_suffix`), and its deviation from the plan
+add_plan_actual_axes <- function(chart, y_name, type_labels, unit_suffix, ids,
+                                 log_value, log_scale = TRUE) {
+  axis <- list(
+    type = if (log_scale) "log" else "value",
+    axisLabel = list(
+      showMinLabel = TRUE, showMaxLabel = TRUE, hideOverlap = TRUE,
+      # As in add_category_lines()
+      formatter = htmlwidgets::JS("
+        function(value) {
+          return value.toLocaleString('hu-HU', { maximumFractionDigits: 20 });
+        }
+      ")
+    )
+  )
+  chart$x$opts$xAxis[[1]] <- modifyList(chart$x$opts$xAxis[[1]], c(axis, list(
+    # Below the labels, as at the end of the axis (where the years' name is) it
+    # would stick out of the chart
+    nameLocation = "middle", nameGap = 30
+  )))
+  chart$x$opts$yAxis[[1]] <- modifyList(chart$x$opts$yAxis[[1]],
+                                        c(axis, list(name = y_name)))
+  # Under the points, left out of the tooltip, and drawn once the range is known
+  # (see below)
+  chart$x$opts$series <- c(chart$x$opts$series, list(list(
+    id = "diagonal", type = "line", data = list(), symbol = "none", silent = TRUE,
+    z = 1, lineStyle = list(type = "dashed", color = "#888", width = 1)
+  )))
+
+  chart |>
+    # Kept within the chart, with its lines wrapped, as the tooltip of the lines
+    e_tooltip(trigger = "item", confine = TRUE, extraCssText = "white-space: normal;") |>
+    # Room for the name of the x axis, between its labels and the legend
+    e_grid(bottom = 100) |>
+    htmlwidgets::onRender("
+      function(el, x, data) {
+        var chart = echarts.getInstanceByDom(el);
+        var source = chart.getOption().dataset[0].source;
+        var format = new Intl.NumberFormat('hu-HU', {
+          maximumFractionDigits: 1, maximumSignificantDigits: 2,
+          roundingPriority: 'morePrecision'
+        });
+        var percent = new Intl.NumberFormat('hu-HU', {
+          maximumFractionDigits: 1, signDisplay: 'exceptZero'
+        });
+        // As `format`, but with a sign
+        var signed = new Intl.NumberFormat('hu-HU', {
+          maximumFractionDigits: 1, maximumSignificantDigits: 2,
+          roundingPriority: 'morePrecision', signDisplay: 'exceptZero'
+        });
+
+        // The largest of 1, 2 and 5 times a power of 10 that is at most `value`
+        // (with `up`, the smallest that is at least `value`), for a positive `value`:
+        // the ends of a log axis
+        function round(value, up) {
+          var power = Math.pow(10, Math.floor(Math.log10(value)));
+          var steps = [1, 2, 5, 10].map(function(step) { return step * power; });
+          return up ? steps.find(function(s) { return s >= value; }) :
+            steps.filter(function(s) { return s <= value; }).pop();
+        }
+
+        // The step between the ticks of a linear axis over `span`, as ECharts would
+        // choose it: about a fifth of the span, rounded to 1, 2, 3 or 5 times a power
+        // of 10
+        function step(span) {
+          var exponent = Math.floor(Math.log10(span / 5));
+          var f = span / 5 / Math.pow(10, exponent);
+          return multiple(f < 1.5 ? 1 : f < 2.5 ? 2 : f < 4 ? 3 : f < 7 ? 5 : 10,
+                          Math.pow(10, exponent));
+        }
+
+        // `n` times the step `s` (whose first digit is its only one), without the
+        // error of floating-point arithmetic (as in 3 * 0.1)
+        function multiple(n, s) {
+          return +(n * s).toFixed(Math.max(0, -Math.floor(Math.log10(s))));
+        }
+
+        // The radio buttons of the axes, and the keys of the points that the
+        // filters leave (null if there's no filter)
+        var scale = document.getElementById(data.scaleId), keys = null;
+        // The options of the axes other than their type and range, as set at first:
+        // ECharts replaces an axis whose type changes, dropping the rest
+        var axes = ['xAxis', 'yAxis'].map(function(name) {
+          var axis = chart.getOption()[name][0];
+          return { name: axis.name, nameLocation: axis.nameLocation,
+                   nameGap: axis.nameGap, axisLabel: axis.axisLabel };
+        });
+        function update() {
+          var log = scale.querySelector('input:checked').value === data.logValue;
+          var lo = Infinity, hi = -Infinity;
+          source.forEach(function(row) {
+            if (keys && !keys.has(String(row.XkeyX))) return;
+            // Log axes only show positive values (which the radio buttons also
+            // filter by)
+            if (log && !(row.plan > 0 && row.actual > 0)) return;
+            lo = Math.min(lo, row.plan, row.actual);
+            hi = Math.max(hi, row.plan, row.actual);
+          });
+          // Unless the filters leave no points
+          if (lo > hi) return;
+          var min, max, interval = null;
+          if (log) {
+            min = round(lo, false);
+            max = round(hi, true);
+            // If all the values are the same 1, 2 or 5 times a power of 10
+            if (max <= min) max = 10 * min;
+          } else {
+            // With the ticks spaced explicitly, so that both ends are ticks
+            interval = step(Math.max(hi, 0) - Math.min(lo, 0) || 1);
+            min = lo < 0 ? multiple(Math.floor(lo / interval), interval) : 0;
+            max = multiple(Math.ceil(hi / interval), interval);
+            // If all the values are 0
+            if (max <= min) max = multiple(Math.round(min / interval) + 1, interval);
+          }
+          var range = { type: log ? 'log' : 'value', min: min, max: max, interval: interval };
+          chart.setOption({
+            xAxis: Object.assign({}, axes[0], range),
+            yAxis: Object.assign({}, axes[1], range),
+            series: [{ id: 'diagonal', data: [[min, min], [max, max]] }]
+          });
+        }
+        kiadas.onFilter(data.group, function(value) {
+          keys = value && new Set(value.map(String));
+          update();
+        });
+        // The radio buttons change the filters too, which updates the chart, but
+        // they change the type of the axes even if the points stay the same
+        scale.addEventListener('change', update);
+
+        function bold(text) {
+          return '<b style=\"white-space: nowrap\">' + text + '</b>';
+        }
+        chart.setOption({
+          tooltip: {
+            formatter: function(p) {
+              // With crosstalk, p.value is the whole data row as an object
+              function value(dim) { return p.value[p.dimensionNames[p.encode[dim][0]]]; }
+              var plan = value('x'), actual = value('y');
+              var lines = [
+                p.marker + ' ' + p.seriesName + ', ' + p.value.yearchr,
+                data.labels[0] + ': ' + bold(format.format(plan) + data.unit),
+                data.labels[1] + ': ' + bold(format.format(actual) + data.unit)
+              ];
+              // The difference (between percentages, in percentage points) and, unless
+              // there's no plan to compare with (a plan of 0, on linear axes), the
+              // difference relative to the plan
+              var difference = signed.format(actual - plan) +
+                (data.unit === '%' ? ' százalékpont' : data.unit);
+              if (plan) difference += ' (' + percent.format(100 * (actual / plan - 1)) + '%)';
+              lines.push('Eltérés a tervtől: ' + bold(difference));
+              return lines.join('<br>');
+            }
+          }
+        });
+      }
+    ", data = list(group = ids$group, scaleId = ids$scale, logValue = log_value,
+                   labels = as.list(type_labels), unit = unit_suffix))
+}
+
+# The colouring of a plan_actual_chart() (see there), with the ids `ids` (see
+# there), chosen with its radio buttons: by category, the series as
+# add_part_legend() colours them, or by year, each point in the colour of its year
+# among `years` (from dark to light along viridis, without its lightest yellows,
+# which would hardly show on white), with the legend then listing the years of the
+# points shown. Hovering a year in the legend, or a point, then highlights the
+# points of the year and fades the others, as hovering a point highlights its
+# category when coloured by category. Clicking a year in the legend switches its
+# points off and on, as clicking a category does: they're then left out of the
+# description and the data files too, but the axes stay as they are. Categories
+# and years switched off stay off while the colouring changes, so that, e.g., the
+# points of a few categories can be coloured by year
+add_plan_actual_colors <- function(chart, ids, years) {
+  colors <- setNames(
+    grDevices::colorRampPalette(grDevices::hcl.colors(9, "viridis")[1:8])(length(years)),
+    years
+  )
+  # Series without data, one for each year, which give the legend its years, as
+  # in add_category_heatmap(). Highlighting one fades all the points (see below)
+  chart$x$opts$series <- c(chart$x$opts$series, lapply(years, \(year) {
+    list(name = year, type = "scatter", data = list(), color = colors[[year]],
+         emphasis = list(focus = "self"))
+  }))
+  # The datasets of the series of the categories filter their points by category
+  # and by key (see start_filtered()), and then by year, by the years switched on
+  # in the legend (at first all: see below). Not with a crosstalk filter, which
+  # would also change the range of the axes (see add_plan_actual_axes())
+  chart$x$opts$dataset <- lapply(chart$x$opts$dataset, \(d) {
+    if (isTRUE(startsWith(d$id, "Xtalk_"))) {
+      d$transform <- c(d$transform, list(list(
+        type = "filter", config = list(dimension = "yearchr", reg = "^")
+      )))
+    }
+    d
+  })
+  # ECharts animates a change of the points by pairing those before and after it,
+  # by default by their order, so that when some leave (as when a year is switched
+  # off), the others would slide into their places. So it pairs them by their keys
+  chart$x$opts$series <- lapply(chart$x$opts$series, \(s) {
+    if (!is.null(s$datasetId)) s$encode$itemId <- "XkeyX"
+    s
+  })
+
+  htmlwidgets::onRender(chart, "
+    function(el, x, data) {
+      var chart = echarts.getInstanceByDom(el);
+      var option = chart.getOption(), source = option.dataset[0].source;
+      var choice = document.getElementById(data.colorId);
+      // The keys of the points that the filters leave (null if there's no filter),
+      // the categories that add_part_legend() lists for them, the years switched
+      // off in the legend, and the year highlighted (see highlightYear()), if any
+      var keys = null, legend = [], hidden = new Set(), highlighted = null;
+
+      function byYear() { return choice.querySelector('input:checked').value === 'year'; }
+
+      // The colour of a point: that of its category's series, or that of its year.
+      // (With crosstalk, p.value is the whole data row as an object)
+      function color(p) { return byYear() ? data.colors[p.value.yearchr] : p.color; }
+
+      function update() {
+        var year = byYear(), shown = {};
+        source.forEach(function(row) {
+          if (!keys || keys.has(String(row.XkeyX))) shown[row.yearchr] = true;
+        });
+        chart.setOption({
+          legend: {
+            data: year ? Object.keys(data.colors).filter(function(y) { return shown[y]; }) :
+              legend
+          },
+          // The series of the categories (the others have no data from the dataset),
+          // which only highlight themselves on hover when coloured by category
+          // (when coloured by year, the year is highlighted instead: see below)
+          series: option.series.map(function(s) {
+            if (s.datasetId) {
+              return { itemStyle: { color: color }, emphasis: { focus: year ? 'none' : 'series' } };
+            }
+            // The series of a year switched off isn't highlighted when the legend is
+            // hovered, as that would fade all the points
+            return data.colors[s.name] ? { emphasis: { disabled: hidden.has(s.name) } } : {};
+          })
+        });
+      }
+
+      kiadas.onFilter(data.group, function(value) {
+        keys = value && new Set(value.map(String));
+        // As add_part_legend() has just listed them, before this
+        legend = chart.getOption().legend[0].data;
+        update();
+      });
+      choice.addEventListener('change', update);
+
+      // Highlights the points of `year` and fades the others (or with `type`
+      // 'downplay', ends that): highlighting the year's series fades all the points
+      // (see above), so the points of the year are highlighted too, in the same
+      // action, as each action first ends the fading of the one before. (Not by
+      // recolouring the points, which would redraw the legend under the mouse)
+      function highlightYear(type, year) {
+        highlighted = type === 'highlight' ? year : null;
+        var batch = [{ seriesName: year }];
+        // The series shown (not those switched off in the legend)
+        chart.getModel().eachSeries(function(series) {
+          if (series.subType !== 'scatter') return;
+          var points = series.getData(), indices = [];
+          for (var i = 0; i < points.count(); i++) {
+            if (points.getRawDataItem(i).yearchr === year) indices.push(i);
+          }
+          if (indices.length) {
+            batch.push({ seriesIndex: series.seriesIndex, dataIndexInside: indices,
+                         notBlur: true });
+          }
+        });
+        chart.dispatchAction({ type: type, batch: batch });
+      }
+
+      // Hovering a year in the legend highlights its series, which has no points
+      // (that action's event has no batch, unlike that of highlightYear()), unless
+      // the year is switched off
+      ['highlight', 'downplay'].forEach(function(type) {
+        chart.on(type, function(e) {
+          if (!e.batch && byYear() && data.colors[e.seriesName] && !hidden.has(e.seriesName)) {
+            highlightYear(type, e.seriesName);
+          }
+        });
+      });
+      // And when coloured by year, so does hovering a point, of its year
+      [['mouseover', 'highlight'], ['mouseout', 'downplay']].forEach(function(event) {
+        chart.on(event[0], function(p) {
+          if (byYear() && p.seriesType === 'scatter' && p.value && p.value.yearchr) {
+            highlightYear(event[1], p.value.yearchr);
+          }
+        });
+      });
+      // And it ends when the mouse leaves the chart, in case ECharts lost track of
+      // what the mouse was over (as when the chart is resized)
+      chart.getZr().on('globalout', function() {
+        if (highlighted) highlightYear('downplay', highlighted);
+      });
+
+      // Clicking a year in the legend switches its series off or on, which has no
+      // points, so the points of the years switched off are filtered out by the
+      // last filter of each dataset (see above)
+      chart.on('legendselectchanged', function(e) {
+        if (!data.colors[e.name]) return;
+        // Ends the highlighting of the year clicked first, as ECharts can't end the
+        // fading of the other points once they're filtered
+        highlightYear('downplay', e.name);
+        hidden = new Set(Object.keys(data.colors).filter(function(y) {
+          return e.selected[y] === false;
+        }));
+        // Any value but those of the years switched off
+        var reg = hidden.size ? '^(?!(' + Array.from(hidden).join('|') + ')$)' : '^';
+        chart.setOption({ dataset: chart.getOption().dataset.map(function(d) {
+          if (!d.transform || !d.transform[2]) return {};
+          var transform = d.transform.slice();
+          transform[2] = { type: 'filter', config: { dimension: 'yearchr', reg: reg } };
+          return { transform: transform };
+        }) });
+        // For the series of the years switched off
+        update();
+      });
+    }
+  ", data = list(group = ids$group, colorId = ids$color, colors = as.list(colors)))
+}
 ```
 
 # A magyar költségvetés kiadásai
+
+## A kiadások alakulása időben
 
 Elsőként nézzük meg, hogy mennyit költött nominálisan (vagyis forintban mérve, és az adott évi forintban mérve) az állam az egyes funkciókra az elmúlt évtizedekben! Az ábra alapbeállítás szerint az egészségügyet mutatja, de bármilyen más funkció is kiválasztható. Használható mind a magyar, mind a nemzetközi csoportosítás; választható, hogy egy főcsoport egésze jelenjen meg (ha a csoport beállítása "Összesen"), de bármely konkrét csoport is kiválasztható.
 
@@ -2077,3 +2718,18 @@ category_chart(
   download_axis_name = TRUE
 )
 ```
+
+## A költségvetési tervek teljesülése: az előirányzat és a tényadat viszonya
+
+Egy adott funkcióra betervezett pénz (előirányzat) és a ténylegesen elköltött pénz (teljesülés) alapvetően két okból térhet el: rossz minőségű tervezés miatt, valamint váratlan, előre nem látható események miatt. A kérdés vizsgálata érdekes és fontos, hiszen segít az ilyen váratlan események tudatos felismerésében, vagy, ha ezeket kizártuk vagy korrigáltunk rájuk, akkor a tervezés minőségének elemzésében. Mérvadó lehet, például, ha egy bizonyos funkció konzisztensen, szinte minden évben alul- vagy felültervezett.
+
+A kérdést tulajdonképpen már a fenti ábrák segítségével is lehetett volna vizsgálni, hiszen megjeleníthető volt mind a tervezet, mind a tényleges teljesítés, így a kettő viszonya is látható. A probléma az, hogy abban a formában -- egymás mellett futó görbék -- a dolog túl áttételes; nehéz pontosan érzékelni a kettő viszonyát. Sokkal jobban látható, ha közvetlenül egymással szemben ábrázoljuk őket. A következő ábrán minden pont egy összetartozó terv--tény pár; a ferde szaggatott vonal az egyenlőség vonala, tehát egy rajta lévő pont azt jelzi, hogy a terv és a tény (abban az évben és annál a kategóriánál) egyezett. A vonal felett lévő esetekben a teljesülés magasabb lett, mint az előirányzat, a vonal alatt pedig fordítva, a betervezett összeg volt nagyobb mint a terv. Az ábrán kiválasztható egyebek mellett az is, hogy a tengelyek skálázása szokásos lineáris, vagy logaritmikus legyen, ez utóbbi lehetővé teszi a nagyon különböző nagyságrendekbe eső adatok jobb ábrázolását:
+
+```{r}
+plan_actual_chart(
+  axis_name = c("Tervezett kiadás [Mrd Ft]", "Tényleges kiadás [Mrd Ft]"),
+  unit = "Mrd Ft",
+  title = "A magyar költségvetés tervezett és tényleges kiadásai"
+)
+```
+
