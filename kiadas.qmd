@@ -772,22 +772,11 @@ category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
   axis_name <- rep_len(axis_name, length(var))
   ids <- category_ids(id)
   data <- category_data(var, ids$group, stack, relative, heatmap)
-  # After the values, in the tooltip and in the description for screen readers: a
-  # space before the unit, but not before a percent sign (or if there's no unit)
-  unit_suffix <- if (unit %in% c("", "%")) unit else paste0(" ", unit)
+  # After the values, in the tooltip and in the description for screen readers
+  unit_suffix <- unit_suffix_for(unit)
   # The decimals of the values there: the ratios of relative mode need two
   fraction_digits <- if (relative) 2L else 1L
-  # A heatmap labels its rows by the codes of the parts, so the legend, the tooltip,
-  # the description for screen readers and the downloaded data name them by these
-  row_names <- if (heatmap) {
-    with(unique(data$paths[, .(code, nameLabel = as.character(nameLabel))]),
-         as.list(setNames(nameLabel, code)))
-  }
-  # The sizes in a heatmap, in px: the average height of a row, the least height of
-  # the plot, and the height of the colour scale beside it, from its top. The plot
-  # is at least 20px taller than the scale, as the name of the x axis is beside its
-  # bottom
-  sizes <- list(row = 24, plot = 150, scale = 130)
+  row_names <- if (heatmap) heatmap_row_names(data$paths)
   
   chart <- data$shared_data |>
     # Hovering the legend highlights nothing if the chart had more than
@@ -797,7 +786,7 @@ category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
     e_chart(yearchr, hoverLayerThreshold = 1e6, elementId = ids$chart)
   chart <- if (heatmap) {
     add_category_heatmap(chart, var, axis_name, row_names, ids$group, unit_suffix,
-                         fraction_digits, sizes, row_scale)
+                         fraction_digits, heatmap_sizes, row_scale)
   } else {
     add_category_lines(chart, var, axis_name, unit_suffix, fraction_digits, stack,
                        relative, data$neg_var)
@@ -817,8 +806,8 @@ category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
   chart <- chart |>
     add_base_year_slider(ids, var, base_year) |>
     add_chart_layout(title, ids, data$paths, relative,
-                     row_height = if (heatmap) sizes$row,
-                     min_plot_height = if (heatmap) sizes$plot) |>
+                     row_height = if (heatmap) heatmap_sizes$row,
+                     min_plot_height = if (heatmap) heatmap_sizes$plot) |>
     start_filtered(ids$group)
   
   htmltools::attachDependencies(
@@ -848,6 +837,25 @@ category_ids <- function(id) {
     download = paste0(id, "_download"),
     chart = paste0(id, "_chart")
   )
+}
+
+# What follows the values of a chart in its tooltip and in its description for
+# screen readers: `unit`, after a space, but not after one if it's a percent sign
+# (or if there's no unit)
+unit_suffix_for <- function(unit) if (unit %in% c("", "%")) unit else paste0(" ", unit)
+
+# The sizes in a heatmap (see add_category_heatmap()), in px: the average height of
+# a row, the least height of the plot, and the height of the colour scale beside
+# it, from its top. The plot is at least 20px taller than the scale, as the name of
+# the x axis is beside its bottom
+heatmap_sizes <- list(row = 24, plot = 150, scale = 130)
+
+# The full names of the categories in `paths` (by their `code` and `nameLabel`), by
+# code: a heatmap labels its rows by the codes, so its legend, its tooltip, its
+# description for screen readers and its data files name them by these
+heatmap_row_names <- function(paths) {
+  with(unique(paths[, .(code, nameLabel = as.character(nameLabel))]),
+       as.list(setNames(nameLabel, code)))
 }
 
 # The data of a category_chart() (see there) of the columns `var` of RawData, in
@@ -1127,44 +1135,48 @@ add_category_lines <- function(chart, var, axis_name, unit_suffix, fraction_digi
              ))
 }
 
-# The heatmap of a category_chart() (see there): a row for each part, labelled by
-# its code, from the top in the order of the codes, with a height that follows its
-# weight, its share of the whole's spending in the base year (proportional to the
-# weight's square root with `row_scale = "sqrt"`, or to the weight itself with
-# "linear": see relayout() below), a column for each year, and the cells coloured by
-# the column var[[1]] (the one plotted at first), relative to the base year, with
-# `axis_name[[1]]` on the y axis, as it tells what the colours show. The colours run
-# continuously on a log scale, so that halving looks as
+# The heatmap of a category_chart() or a plan_actual_heatmap() (see there): a row
+# for each part, labelled by its code, from the top in the order of the codes, with
+# a height that follows its weight, its share of the whole's spending (in the
+# column `spending`) in the base year or, with `base_weights = FALSE`, summed over
+# the years shown (proportional to the weight's square root with
+# `row_scale = "sqrt"`, or to the weight itself with "linear": see relayout()
+# below), a column for each year, and the cells coloured by the column var[[1]] (or
+# that chosen with add_column_choice()), with `axis_name[[1]]` on the y axis, as it
+# tells what the colours show. The colours of a ratio (as relative to the base
+# year) run continuously on a log scale, so that halving looks as
 # strong as doubling, from red at 1/2 through light grey at 1 (no change) to blue
 # at 2, and the ratios beyond take the colours at the ends: over a wider range, most
 # ratios would be barely tinted. Light grey, so that no change can be told from the
 # cells without a ratio, which are left empty. The colour scale beside the plot is
 # `sizes$scale` px tall, labelled at 1/2, 0.8, 1, 1.25 and 2 (symmetric around 1 on
-# the log scale, as 0.8 = 1/1.25). As the y axis only shows the codes, the legend
+# the log scale, as 0.8 = 1/1.25). The columns in `linear` (as differences) are
+# coloured in the same colours on a linear scale symmetric around 0 instead (see
+# restyle() below). As the y axis only shows the codes, the legend
 # lists the full names of the rows, `row_names` (by code), and so does the tooltip,
 # with the value of the hovered cell, followed by `unit_suffix`, with at most
-# `fraction_digits` decimals. The filters of the crosstalk group `group` leave the
-# rows of the parts they pick, and the years from their first to their last.
-# `sizes` also gives the average height of a row (`row`) and the least height of
-# the plot (`plot`), in px, as add_chart_layout() lays it out
+# `fraction_digits` decimals (each either one for all the columns of `var`, or a
+# list of one for each, by column), and the weight of the row, as `weight_label`
+# says. The filters of the crosstalk group `group` leave the rows of the parts they
+# pick, and the years from their first to their last. `sizes` also gives the
+# average height of a row (`row`) and the least height of the plot (`plot`), in px,
+# as add_chart_layout() lays it out
 add_category_heatmap <- function(chart, var, axis_name, row_names, group,
-                                 unit_suffix, fraction_digits, sizes, row_scale) {
+                                 unit_suffix, fraction_digits, sizes, row_scale,
+                                 linear = character(), base_weights = TRUE,
+                                 weight_label = "Súlya a bázisévben") {
   # ColorBrewer's RdBu, from decrease (red) to increase (blue), but light grey in the
   # middle (see above), spread evenly over the log2 of the ratios from -1 to 1, and
   # blended in the CIELAB colour space, where the lightness changes evenly
   ramp <- grDevices::colorRamp(c("#b2182b", "#ef8a62", "#fddbc7", "#e0e0e0", "#d1e5f0",
                                  "#67a9cf", "#2166ac"), space = "Lab")
   color_at <- \(log_ratio) grDevices::rgb(ramp((log_ratio + 1) / 2), maxColorValue = 255)
-  # ECharts' visualMap only maps values linearly, so it colours the cells by pieces
-  # 1/32 wide on the log2 scale, too narrow to tell apart, each as its middle (the
-  # ones at the ends also taking every ratio beyond). Its own legend can't label a
-  # gradient between its ends, so it's hidden, and the colour scale drawn by hand
+  # ECharts' visualMap only maps values linearly, so the cells are coloured by pieces
+  # 1/32 wide on the log2 scale (or on a linear one, see restyle() below), too narrow
+  # to tell apart, each as its middle (the ones at the ends also taking every value
+  # beyond). Its own legend can't label a gradient between its ends, so it's hidden,
+  # and the colour scale drawn by hand
   middles <- seq(-1, 1, by = 1 / 32)
-  breaks <- 2^(head(middles, -1) + 1 / 64)
-  pieces <- Map(\(lower, upper, color) {
-    c(if (is.finite(lower)) list(gte = lower), if (is.finite(upper)) list(lt = upper),
-      list(color = color))
-  }, c(-Inf, breaks), c(breaks, Inf), color_at(middles))
   number <- \(x) sub(".", ",", as.character(x), fixed = TRUE)
   ticks <- c(0.5, 0.8, 1, 1.25, 2)
   scale <- list(
@@ -1198,9 +1210,9 @@ add_category_heatmap <- function(chart, var, axis_name, row_names, group,
   }))
   chart$x$opts$legend <- list(data = as.list(full_names), orient = "vertical",
                               icon = "none", itemWidth = 0)
+  # Its pieces are set by restyle() (below), before any cell is drawn
   chart$x$opts$visualMap <- list(list(
-    type = "piecewise", show = FALSE, seriesIndex = 0, dimension = var[[1]],
-    pieces = pieces
+    type = "piecewise", show = FALSE, seriesIndex = 0, dimension = var[[1]]
   ))
   # The rows take up their weights' shares of the y axis, from 0 at the top to 1 at
   # the bottom, labelled with their codes instead of numbers (see relayout()
@@ -1229,14 +1241,18 @@ add_category_heatmap <- function(chart, var, axis_name, row_names, group,
         // The data as it came, before the slider divides it by the base year (see
         // add_base_year_slider()), and the series
         var source = option.dataset[0].source, series = chart.getModel().getSeriesByIndex(0);
-        var format = new Intl.NumberFormat('hu-HU', {
-          maximumFractionDigits: data.digits, maximumSignificantDigits: 2,
-          roundingPriority: 'morePrecision'
-        });
         var percent = new Intl.NumberFormat('hu-HU', {
           maximumFractionDigits: 1, maximumSignificantDigits: 2,
           roundingPriority: 'morePrecision'
         });
+        // A value of the column `column`, as in the tooltip of the lines, with its unit
+        function format(value, column) {
+          var digits = typeof data.digits === 'number' ? data.digits : data.digits[column];
+          return Number(value).toLocaleString('hu-HU', {
+            maximumFractionDigits: digits, maximumSignificantDigits: 2,
+            roundingPriority: 'morePrecision'
+          }) + (typeof data.unit === 'string' ? data.unit : data.unit[column]);
+        }
         // The colour scale (see above), in the font and the colour of the labels of
         // the axes: a bar of the colours, with ticks and labels on its right, the
         // labels at the ends within its height, so that it lines up with the plot
@@ -1245,31 +1261,47 @@ add_category_heatmap <- function(chart, var, axis_name, row_names, group,
                      fontFamily: option.textStyle.fontFamily };
         var context = document.createElement('canvas').getContext('2d');
         context.font = font.fontSize + 'px ' + font.fontFamily;
-        var labelWidth = Math.max.apply(null, scale.ticks.map(function(tick) {
-          return context.measureText(tick.label).width;
-        }));
-        var children = [{
-          type: 'rect', shape: { width: 12, height: scale.height }, silent: true,
-          style: {
-            fill: { type: 'linear', x: 0, y: 1, x2: 0, y2: 0, colorStops: scale.stops }
-          }
-        }];
-        scale.ticks.forEach(function(tick, i) {
-          var y = Math.round(scale.height * (1 - tick.position));
-          children.push({
-            // A pixel high, within the height of the bar. (Not a line, whose bounds
-            // ECharts would widen, moving the bar below the top of the plot)
-            type: 'rect', silent: true, style: { fill: label.color },
-            shape: { x: 12, y: Math.min(y, scale.height - 1), width: 4, height: 1 }
-          }, {
-            type: 'text', x: 19, y: y, silent: true,
-            style: Object.assign({
-              text: tick.label,
-              verticalAlign: i === 0 ? 'bottom' :
-                i === scale.ticks.length - 1 ? 'top' : 'middle'
-            }, font)
+        // Draws it with the ticks `ticks` (from the bottom up, at their positions as
+        // fractions of the height of the bar), at first beside the plot, 12px from it,
+        // from its top (where add_chart_layout() then puts it), and then over itself:
+        // as there are always 5 ticks, ECharts updates its elements one by one (it
+        // would mix up the old and the new ones, if the group were replaced)
+        var scaleDrawn = false;
+        function drawScale(ticks) {
+          var labelWidth = Math.max.apply(null, ticks.map(function(tick) {
+            return context.measureText(tick.label).width;
+          }));
+          var children = [{
+            type: 'rect', shape: { width: 12, height: scale.height }, silent: true,
+            style: {
+              fill: { type: 'linear', x: 0, y: 1, x2: 0, y2: 0, colorStops: scale.stops }
+            }
+          }];
+          ticks.forEach(function(tick, i) {
+            var y = Math.round(scale.height * (1 - tick.position));
+            children.push({
+              // A pixel high, within the height of the bar. (Not a line, whose bounds
+              // ECharts would widen, moving the bar below the top of the plot)
+              type: 'rect', silent: true, style: { fill: label.color },
+              shape: { x: 12, y: Math.min(y, scale.height - 1), width: 4, height: 1 }
+            }, {
+              type: 'text', x: 19, y: y, silent: true,
+              style: Object.assign({
+                text: tick.label,
+                verticalAlign: i === 0 ? 'bottom' : i === ticks.length - 1 ? 'top' : 'middle'
+              }, font)
+            });
           });
-        });
+          var group = { id: 'colorScale', children: children };
+          if (!scaleDrawn) {
+            Object.assign(group, { type: 'group', right: 10, top: option.grid[0].top });
+          }
+          scaleDrawn = true;
+          chart.setOption({
+            graphic: { elements: [group] },
+            grid: { right: 10 + 19 + Math.ceil(labelWidth) + 12 }
+          });
+        }
 
         chart.setOption({
           // The year, the full name of the row and the value of the hovered cell, as
@@ -1280,17 +1312,11 @@ add_category_heatmap <- function(chart, var, axis_name, row_names, group,
               function value(dim) { return p.value[p.dimensionNames[p.encode[dim][0]]]; }
               var row = rows[value('y')];
               return value('x') + '<br>' + p.marker + ' ' + data.names[value('y')] +
-                ': <b style=\"white-space: nowrap\">' + format.format(value('value')) +
-                data.unit + '</b><br>Súlya a bázisévben: ' +
-                (row ? percent.format(100 * row.share) + '%' : '');
+                ': <b style=\"white-space: nowrap\">' +
+                format(value('value'), p.dimensionNames[p.encode.value[0]]) + '</b><br>' +
+                data.weightLabel + ': ' + (row ? percent.format(100 * row.share) + '%' : '');
             }
-          },
-          // Beside the plot, 12px from it, from its top (see add_chart_layout())
-          graphic: { elements: [{
-            id: 'colorScale', type: 'group', right: 10, top: option.grid[0].top,
-            children: children
-          }] },
-          grid: { right: 10 + 19 + Math.ceil(labelWidth) + 12 }
+          }
         });
 
         // The rows of the data that the filters leave, the base year, and the layout
@@ -1320,15 +1346,21 @@ add_category_heatmap <- function(chart, var, axis_name, row_names, group,
 
         // Lays out the rows shown, from the top in the order of their codes, each
         // with a height proportional to its weight, its share of the whole's spending
-        // in the base year (by absolute value; the rows without any then are left
-        // out), or with data.rowScale 'sqrt', to the weight's square root, but at
+        // in the base year or, without data.baseWeights, summed over the years shown
+        // (by absolute value; the rows without any then are left out), or with
+        // data.rowScale 'sqrt', to the weight's square root, but at
         // least 2px, so that it stays visible. Labels them with their codes, from the
         // largest, wherever a label stays 13px clear of the others, and lists their
         // names in the legend
         function relayout() {
           var weights = {};
           shown.forEach(function(r) {
-            if (r.yearchr === baseYear && r.spending) weights[r.code] = Math.abs(r.spending);
+            if (!r.spending) return;
+            if (!data.baseWeights) {
+              weights[r.code] = (weights[r.code] || 0) + Math.abs(r.spending);
+            } else if (r.yearchr === baseYear) {
+              weights[r.code] = Math.abs(r.spending);
+            }
           });
           var codes = data.codes.filter(function(code) { return weights[code] > 0; });
           // What the heights are proportional to
@@ -1377,10 +1409,55 @@ add_category_heatmap <- function(chart, var, axis_name, row_names, group,
           });
         }
 
+        // Colours the cells by the column `column`, by pieces 1/32 wide (see above),
+        // each in the colour of its middle: on the log2 scale of ratios from 1/2 to 2
+        // or, for a column in data.linear, on a linear scale from -M to M, where M is
+        // the 90th percentile of the absolute values of the cells shown, rounded up
+        // to 1, 2 or 5 times a power of 10, so that a few large values don't leave
+        // the others barely tinted (the values beyond take the colours at the ends)
+        var column = data.columns[0];
+        function restyle() {
+          var linear = data.linear.indexOf(column) >= 0, range = 1, ticks = scale.ticks;
+          if (linear) {
+            var values = shown.filter(function(r) { return r[column] != null; })
+              .map(function(r) { return Math.abs(r[column]); })
+              .sort(function(a, b) { return a - b; });
+            var q = values.length ? values[Math.floor(0.9 * (values.length - 1))] : 0;
+            if (q > 0) {
+              var power = Math.pow(10, Math.floor(Math.log10(q)));
+              range = [1, 2, 5, 10].map(function(s) { return s * power; })
+                .find(function(s) { return s >= q; });
+            }
+            ticks = [-1, -0.5, 0, 0.5, 1].map(function(t, i) {
+              var text = (range * t).toLocaleString('hu-HU', { maximumFractionDigits: 20 });
+              return { position: (t + 1) / 2,
+                       label: i === 0 ? '\\u2264 ' + text : i === 4 ? '\\u2265 ' + text : text };
+            });
+          }
+          // The bound between the pieces i and i + 1, halfway between their middles,
+          // which run from -1 to 1
+          var n = data.colors.length;
+          function bound(i) {
+            var position = -1 + 2 * (i + 0.5) / (n - 1);
+            return linear ? range * position : Math.pow(2, position);
+          }
+          chart.setOption({ visualMap: {
+            dimension: column,
+            pieces: data.colors.map(function(color, i) {
+              var piece = { color: color };
+              if (i > 0) piece.gte = bound(i - 1);
+              if (i < n - 1) piece.lt = bound(i);
+              return piece;
+            })
+          } });
+          drawScale(ticks);
+        }
+
         // The heatmap shows only the rows of the parts that the filters leave, and
         // the x axis only the years from their first to their last (from the start,
-        // and whenever the filters change). The rows are laid out once the slider
-        // has chosen the base year, which it first does right after this
+        // and whenever the filters change), coloured for the values shown. With
+        // weights from the base year, the rows are laid out once the slider has
+        // chosen it, which it first does right after this
         kiadas.onFilter(data.group, function(value) {
           var keys = value && new Set(value.map(String)), hasYear = {};
           shown = source.filter(function(r) { return !keys || keys.has(String(r.XkeyX)); });
@@ -1392,12 +1469,18 @@ add_category_heatmap <- function(chart, var, axis_name, row_names, group,
                                 years.indexOf(covered[covered.length - 1]) + 1)
             }
           });
-          if (baseYear !== null) relayout();
+          restyle();
+          if (baseYear !== null || !data.baseWeights) relayout();
         });
         // And whenever the base year changes
         el.addEventListener('baseyear', function(e) {
           baseYear = e.detail;
           relayout();
+        });
+        // And recoloured whenever another column is chosen (see add_column_choice())
+        el.addEventListener('column', function(e) {
+          column = e.detail;
+          restyle();
         });
 
         // Hovering a name in the legend highlights the cells of its row (rather than
@@ -1428,7 +1511,9 @@ add_category_heatmap <- function(chart, var, axis_name, row_names, group,
       }
     ", data = list(group = group, codes = as.list(names(row_names)), names = row_names,
                    unit = unit_suffix, digits = fraction_digits, scale = scale,
-                   sizes = sizes, rowScale = row_scale))
+                   sizes = sizes, rowScale = row_scale, colors = as.list(color_at(middles)),
+                   columns = as.list(var), linear = as.list(linear),
+                   baseWeights = base_weights, weightLabel = weight_label))
 }
 
 # The credit below a category_chart() or a plan_actual_chart() and the x axis,
@@ -1453,7 +1538,8 @@ add_chart_frame <- function(chart, x_name = "Év") {
 
 # For screen readers, a category_chart() or a plan_actual_chart() (see there) is
 # an image, described by its title, its axes and the values shown, formatted as in
-# the tooltip (with `unit_suffix` and at most `fraction_digits` decimals). `type`
+# the tooltip (with `unit_suffix` and at most `fraction_digits` decimals, each either
+# one for all the values, or a list of one for each column, by column). `type`
 # names the kind of chart (or, as a list, the kind for each type of the x axis, as
 # a scatter plot's axes may be linear or logarithmic). A heatmap's values are
 # listed by row, under the rows'
@@ -1469,10 +1555,17 @@ add_chart_description <- function(chart, type, unit_suffix, fraction_digits,
     htmlwidgets::onRender("
       function(el, x, data) {
         var chart = echarts.getInstanceByDom(el);
-        var format = new Intl.NumberFormat('hu-HU', {
-          maximumFractionDigits: data.digits, maximumSignificantDigits: 2,
-          roundingPriority: 'morePrecision'
-        });
+        // A value of the column `column`, with at most its decimals, and its unit
+        var formats = {};
+        function format(value, column) {
+          var digits = typeof data.digits === 'number' ? data.digits : data.digits[column];
+          formats[digits] = formats[digits] || new Intl.NumberFormat('hu-HU', {
+            maximumFractionDigits: digits, maximumSignificantDigits: 2,
+            roundingPriority: 'morePrecision'
+          });
+          return formats[digits].format(value) +
+            (typeof data.unit === 'string' ? data.unit : data.unit[column]);
+        }
         el.setAttribute('role', 'img');
 
         // The points of a scatter plot, of each scatter series shown (not of the
@@ -1485,9 +1578,8 @@ add_chart_description <- function(chart, type, unit_suffix, fraction_digits,
             var x = points.mapDimension('x'), y = points.mapDimension('y');
             for (var i = 0; i < points.count(); i++) {
               values.push(points.getRawDataItem(i)[data.points.label] + ': ' +
-                          data.points.x + ' ' + format.format(points.get(x, i)) +
-                          data.unit + ', ' + data.points.y + ' ' +
-                          format.format(points.get(y, i)) + data.unit);
+                          data.points.x + ' ' + format(points.get(x, i), x) + ', ' +
+                          data.points.y + ' ' + format(points.get(y, i), y));
             }
             if (values.length) described.push(series.name + ': ' + values.join('; '));
           });
@@ -1516,7 +1608,8 @@ add_chart_description <- function(chart, type, unit_suffix, fraction_digits,
           if (data.points) {
             parts.push.apply(parts, describePoints(model));
           } else {
-            var sums = new Map();
+            // With the column of each name
+            var sums = new Map(), columns = new Map();
             model.eachSeries(function(series) {
               var points = series.getData(), heatmap = series.id === 'heatmap';
               var y = points.mapDimension(heatmap ? 'value' : 'y');
@@ -1529,11 +1622,12 @@ add_chart_description <- function(chart, type, unit_suffix, fraction_digits,
                 var values = sums.get(name) || new Map();
                 values.set(x, (values.get(x) || 0) + value);
                 sums.set(name, values);
+                columns.set(name, y);
               }
             });
             sums.forEach(function(values, name) {
               parts.push(name + ': ' + Array.from(values, function(entry) {
-                return entry[0] + ': ' + format.format(entry[1]) + data.unit;
+                return entry[0] + ': ' + format(entry[1], columns.get(name));
               }).join('; '));
             });
           }
@@ -1598,6 +1692,9 @@ add_column_choice <- function(chart, ids, var, axis_name, parent_var, parts = FA
               });
             }
             chart.setOption(options);
+            // For a heatmap, which colours its cells by the column (see
+            // add_category_heatmap())
+            el.dispatchEvent(new CustomEvent('column', { detail: column }));
           }
 
           choice.addEventListener('change', function() {
@@ -2021,8 +2118,17 @@ add_chart_layout <- function(chart, title, ids, paths = NULL, relative = FALSE,
           el.style.height = height + titleRoom + legendRoom + rowsRoom + 'px';
           if (chart.getWidth() !== el.clientWidth || chart.getHeight() !== el.clientHeight) {
             chart.resize({ width: el.clientWidth, height: el.clientHeight });
+            // ECharts then lays out the legend anew, for the new height (a vertical
+            // legend wraps into more columns when the chart is short), so if that
+            // changed its height, the chart is laid out once more (but not endlessly)
+            if (legendExtra() !== legendRoom && passes < 2) {
+              passes++;
+              update();
+            }
           }
+          passes = 0;
         }
+        var passes = 0;
 
         // Whenever the choices, the filters or the size of the window change, once
         // in the next frame, however many of these happen before it (one choice
@@ -2122,14 +2228,18 @@ plan_actual_chart <- function(axis_name, unit, title = NULL, var = "value",
   # The choices of the radio buttons of the axes
   scales <- c(linear = "Lineáris", log = "Logaritmikus")
   data <- plan_actual_data(var, ids$group, scales)
-  # As in category_chart()
-  unit_suffix <- if (unit %in% c("", "%")) unit else paste0(" ", unit)
+  unit_suffix <- unit_suffix_for(unit)
   # The names of the two types of data, as elsewhere on the page
   type_labels <- as.character(
     RawData$typeLabel[match(c("original_plan", "actual"), RawData$type)]
   )
+  # The columns that the chart shows, by category
+  shared_data <- crosstalk::SharedData$new(
+    data$points[, .(series, yearchr, plan, actual)] |> dplyr::group_by(series),
+    key = as.character(data$points$key), group = ids$group
+  )
 
-  chart <- data$shared_data |>
+  chart <- shared_data |>
     # hoverLayerThreshold as in category_chart(). Not reordered by the x values (the
     # plans), so that the downloaded data and the description list the points of
     # each category by year
@@ -2155,8 +2265,15 @@ plan_actual_chart <- function(axis_name, unit, title = NULL, var = "value",
 
   htmltools::attachDependencies(
     htmltools::tagList(
-      plan_actual_filters(ids, data$shared_points, data$shared_scales,
-                          scales[[if (log_scale) "log" else "linear"]]),
+      plan_actual_filters(
+        ids, data$shared_points,
+        filter_radio(id = ids$scale, label = "Tengelyek:", sharedData = data$shared_scales,
+                     group = ~scale, selected = scales[[if (log_scale) "log" else "linear"]],
+                     compact = TRUE),
+        # Not a filter: it only changes the colours (see add_plan_actual_colors())
+        radio_buttons(id = ids$color, label = "Színezés:",
+                      choices = c("Kategória" = "category", "Év" = "year"), compact = TRUE)
+      ),
       add_download_menu(
         chart, unit, id = ids$download, choice_id = ids$scale,
         point_columns = setNames(
@@ -2170,20 +2287,22 @@ plan_actual_chart <- function(axis_name, unit, title = NULL, var = "value",
   )
 }
 
-# The data of a plan_actual_chart() (see there) of the column `var` of RawData, in
-# the crosstalk group `group`: `points`, a row for each Hungarian category (its
-# `code` and `nameLabel`) in each year (`yearchr`) with both a plan (`plan`) and an
-# actual value (`actual`), with its main group (`main`, as in category_data():
-# "Összesen" for the main groups), and a series for each category, in the order of
-# the codes, named by its number, as in category_data(); `choices`, a row for each
-# choice of the main group dropdown (`main`) and each point it shows (`key`); and
-# in the group, `shared_points` of the choices and `shared_scales` of the radio
-# buttons of the axes for the filters, and `shared_data` for the chart, which pick
-# the points by their keys, their row numbers in `points`. The radio buttons offer
-# the values of `scales`, its "linear" one for all the points, its "log" one for
-# those with a positive plan and actual value, which log axes can show. The chart
-# only gets the columns it shows, rounded (see round_for_chart())
-plan_actual_data <- function(var, group, scales) {
+# The data of a plan_actual_chart() or a plan_actual_heatmap() (see there) of
+# the column `var` of RawData, rounded (see round_for_chart()), in the crosstalk
+# group `group`: `points`, a row for each Hungarian category (its `code` and
+# `nameLabel`) in each year (`yearchr`) with both a plan (`plan`) and an actual
+# value (`actual`) or, with `complete = FALSE`, in each year from the first to the
+# last with both for any category (with NA where the category doesn't have both),
+# with its main group (`main`, as in category_data(): "Összesen" for the main
+# groups), and a series for each category, in the order of the codes, named by its
+# number, as in category_data(); `choices`, a row for each choice of the main group
+# dropdown (`main`) and each row of `points` that it shows (`key`); and in the
+# group, `shared_points` of the choices for the dropdown, which picks the rows of
+# `points` by their keys, their row numbers. With `scales`, also `shared_scales`
+# for the radio buttons of the axes of a plan_actual_chart(), which offer its
+# values: its "linear" one for all the points, its "log" one for those with a
+# positive plan and actual value, which log axes can show
+plan_actual_data <- function(var, group, scales = NULL, complete = TRUE) {
   types <- c(original_plan = "plan", actual = "actual")
   long <- CategoryPaths[
     classification == "Magyar" & RawData$type[key] %chin% names(types), .(
@@ -2196,7 +2315,14 @@ plan_actual_data <- function(var, group, scales) {
   setnames(long, "value", var)
   round_for_chart(long, var)
   points <- dcast(long, main + nameLabel + code + yearchr ~ type, value.var = var)
-  points <- points[!is.na(plan) & !is.na(actual)]
+  both <- points[!is.na(plan) & !is.na(actual)]
+  points <- if (complete) both else {
+    years <- range(as.integer(both$yearchr))
+    years <- as.character(seq(years[1], years[2]))
+    points[unique(both[, .(main, nameLabel, code)])[, .(yearchr = years),
+                                                     by = .(main, nameLabel, code)],
+           on = .(main, nameLabel, code, yearchr)]
+  }
   setorder(points, code, yearchr)
   points[, `:=`(
     key = .I,
@@ -2212,30 +2338,26 @@ plan_actual_data <- function(var, group, scales) {
     points[main == "Összesen" & !as.character(nameLabel) %chin% parents,
            .(main = as.character(nameLabel), code, key)]
   )[order(main != "Összesen", code), .(main, key)]
-  # Offered in the order of `scales`
-  axes <- rbind(
-    points[, .(scale = scales[["linear"]], key)],
-    points[plan > 0 & actual > 0, .(scale = scales[["log"]], key)]
-  )[, scale := factor(scale, levels = unname(scales))]
-
   list(
     points = points,
     choices = choices,
     shared_points = crosstalk::SharedData$new(choices, key = ~key, group = group),
-    shared_scales = crosstalk::SharedData$new(axes, key = ~key, group = group),
-    shared_data = crosstalk::SharedData$new(
-      points[, .(series, yearchr, plan, actual)] |> dplyr::group_by(series),
-      key = as.character(points$key), group = group
+    shared_scales = if (!is.null(scales)) crosstalk::SharedData$new(
+      # Offered in the order of `scales`
+      rbind(
+        points[, .(scale = scales[["linear"]], key)],
+        points[plan > 0 & actual > 0, .(scale = scales[["log"]], key)]
+      )[, scale := factor(scale, levels = unname(scales))],
+      key = ~key, group = group
     )
   )
 }
 
-# The filters of a plan_actual_chart() (see there), with the ids `ids` (see
-# plan_actual_chart()), laid out as in category_filters(): the main group dropdown,
-# on the rows of `shared_points`, at "Összesen" at first, and the radio buttons of
-# the type of the axes, on the rows of `shared_scales` (see plan_actual_data()), at
-# `scale` at first, and those of the colouring, by category at first
-plan_actual_filters <- function(ids, shared_points, shared_scales, scale) {
+# The filters of a plan_actual_chart() or a plan_actual_heatmap() (see there),
+# with the ids `ids` (see there), laid out as in category_filters(): the main group
+# dropdown, on the rows of `shared_points` (see plan_actual_data()), at "Összesen"
+# at first, followed by the radio buttons in `...` (leaving out NULLs)
+plan_actual_filters <- function(ids, shared_points, ...) {
   htmltools::div(
     class = "d-flex flex-wrap align-items-end row-gap-2 mb-3",
     # Not Bootstrap's column-gap-3, as in category_filters()
@@ -2251,24 +2373,10 @@ plan_actual_filters <- function(ids, shared_points, shared_scales, scale) {
         compact = TRUE
       )
     ),
-    htmltools::div(
+    lapply(Filter(Negate(is.null), list(...)), \(buttons) {
       # Full width on phones, where it's alone in its row
-      class = "flex-grow-1 flex-md-grow-0",
-      filter_radio(
-        id = ids$scale,
-        label = "Tengelyek:",
-        sharedData = shared_scales,
-        group = ~scale,
-        selected = scale,
-        compact = TRUE
-      )
-    ),
-    htmltools::div(
-      class = "flex-grow-1 flex-md-grow-0",
-      # Not a filter: it only changes the colours (see add_plan_actual_colors())
-      radio_buttons(id = ids$color, label = "Színezés:",
-                    choices = c("Kategória" = "category", "Év" = "year"), compact = TRUE)
-    )
+      htmltools::div(class = "flex-grow-1 flex-md-grow-0", buttons)
+    })
   )
 }
 
@@ -2606,6 +2714,103 @@ add_plan_actual_colors <- function(chart, ids, years) {
     }
   ", data = list(group = ids$group, colorId = ids$color, colors = as.list(colors)))
 }
+
+# The filters and the heatmap of how much the actual spending in "Eredmények", in
+# the column `var` of RawData, deviated from the plan over the years, as the
+# heatmap of category_chart() (see add_category_heatmap()): a row for each
+# category, for the main groups if the main group dropdown is at "Összesen", else
+# for the subgroups of the chosen main group or, if it has none, for the main group
+# itself, labelled by its code (and named in full in the legend and the tooltip),
+# and a column for each year. The cells are coloured by one of `metrics`, chosen
+# with radio buttons labelled `metric_label`, which offer them by their names (the
+# first one at first): the ratio of the actual spending to the plan ("ratio",
+# missing where the plan isn't positive), on the log scale of ratios, or their
+# difference ("difference"), on a linear scale around 0, with `axis_name` on the y
+# axis for each, as it tells what the colours show. `unit` (unless it's "") follows
+# the differences in the tooltip. The heights of the rows follow the categories'
+# weights, their shares of the planned spending summed over the years shown
+# (proportional to the weights' square roots with `row_scale = "sqrt"`, or to the
+# weights themselves with "linear"). As in plan_actual_chart(), only the Hungarian
+# classification has both types of data, and a year without both leaves the cell
+# empty (as 2002, without a plan). The chart has no title if `title` is NULL, else
+# `title` followed by the name of the chosen main group (unless it's "Összesen").
+# As in category_chart(), each call has its own crosstalk group and element ids
+# (made from `id`), and the chart is only drawn once it comes near the viewport
+plan_actual_heatmap <- function(axis_name, unit, title = NULL, var = "value",
+                                metrics = c("Hányados" = "ratio",
+                                            "Különbség" = "difference"),
+                                metric_label = "Mérőszám:",
+                                row_scale = c("sqrt", "linear"),
+                                id = paste0(var, "_plan_actual_heatmap")) {
+  row_scale <- match.arg(row_scale)
+  ids <- category_ids(id)
+  data <- plan_actual_data(var, ids$group, complete = FALSE)
+  columns <- unname(metrics)
+  # By column: a ratio has no unit, and needs two decimals, as in relative mode in
+  # category_chart()
+  unit_suffix <- list(ratio = "", difference = unit_suffix_for(unit))
+  fraction_digits <- list(ratio = 2L, difference = 1L)
+  # The plan's share of all the planned spending of its year (in %), which weights
+  # its row
+  shares <- CategoryPaths[
+    classification == "Magyar" & RawData$type[key] == "original_plan",
+    .(code = node, yearchr = RawData$yearchr[key], spending = RawData$prop[key])
+  ]
+  # A row for each category in each year, in the order of the years, as echarts4r
+  # puts them on the x axis in the order they first appear in, rounded as in
+  # round_for_chart()
+  rows <- shares[data$points, on = .(code, yearchr)][, .(
+    yearchr, code, key,
+    ratio = signif(fifelse(plan > 0, actual / plan, NA_real_), 6),
+    difference = round(actual - plan, 4),
+    spending = signif(spending, 6)
+  )]
+  setorder(rows, yearchr)
+  shared_data <- crosstalk::SharedData$new(
+    as.data.frame(rows[, c("yearchr", "code", columns, "spending"), with = FALSE]),
+    key = as.character(rows$key), group = ids$group
+  )
+  row_names <- heatmap_row_names(data$points)
+
+  chart <- shared_data |>
+    # As in category_chart()
+    e_chart(yearchr, hoverLayerThreshold = 1e6, elementId = ids$chart) |>
+    add_category_heatmap(columns, axis_name, row_names, ids$group, unit_suffix,
+                         fraction_digits, heatmap_sizes, row_scale,
+                         linear = intersect(columns, "difference"), base_weights = FALSE,
+                         weight_label = "Átlagos súlya a tervekben") |>
+    add_chart_frame() |>
+    add_chart_description(
+      paste("Hőtérkép, a sorok magassága a kategóriák tervekben mért átlagos",
+            if (row_scale == "sqrt") "súlyának négyzetgyökével" else "súlyával",
+            "arányos"),
+      unit_suffix, fraction_digits, row_names
+    ) |>
+    add_column_choice(ids, columns, axis_name, character(), heatmap = TRUE) |>
+    add_chart_layout(title, ids, data$choices, second = FALSE,
+                     row_height = heatmap_sizes$row,
+                     min_plot_height = heatmap_sizes$plot) |>
+    start_filtered(ids$group)
+
+  htmltools::attachDependencies(
+    htmltools::tagList(
+      plan_actual_filters(
+        ids, data$shared_points,
+        if (length(metrics) > 1) {
+          radio_buttons(id = ids$var, label = metric_label, choices = metrics,
+                        compact = TRUE)
+        }
+      ),
+      # Without a unit in the headers, as the data files start with the name of
+      # the y axis, which gives the unit of the metric chosen
+      add_download_menu(chart, "", id = ids$download,
+                        choice_id = if (length(metrics) > 1) ids$var,
+                        download_axis_name = TRUE, row_names = row_names),
+      defer_chart(ids$chart)
+    ),
+    kiadas_dependency
+  )
+}
 ```
 
 # A magyar költségvetés kiadásai
@@ -2730,6 +2935,17 @@ plan_actual_chart(
   axis_name = c("Tervezett kiadás [Mrd Ft]", "Tényleges kiadás [Mrd Ft]"),
   unit = "Mrd Ft",
   title = "A magyar költségvetés tervezett és tényleges kiadásai"
+)
+```
+
+Az ábra nagyon közvetlen, további szubjektív döntések és információtömörítés nélküli ábrázolást tesz lehetővé, de egyrészt így a terv/tény viszony érzékelése is kicsit nehezebb, másrészt nem igazán teszi lehetővé az időbeli alakulás vizsgálatát. Egy lehetséges megoldás, ha választunk egy mérőszámot -- a lenti ábrán a különbség és a hányados választható -- a terv és a tény viszonyának egy számba sűrített jellemzésére. Ennek az az ára, hogy így a dolog építeni fog a mérőszám jóságára, cserében viszont megoldja mindkét fenti problémát:
+
+```{r}
+plan_actual_heatmap(
+  axis_name = c("Tényleges kiadás\n[a tervezett kiadás többszörösében]",
+                "Tényleges kiadás − tervezett kiadás\n[Mrd Ft]"),
+  unit = "Mrd Ft",
+  title = "A magyar költségvetés terveinek teljesülése"
 )
 ```
 
