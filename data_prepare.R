@@ -33,7 +33,6 @@ HunName <- unique(HunData[level %in% c("main_group", "subgroup"), .(hunMagyar = 
 
 HunData <- rbind(
   HunData[doc_type == "Zarszamadas" & type == "original_plan" & year == doc_year & level %in% c("main_group", "subgroup"), .(year, type, level, huncode, value)],
-  HunData[year == 2025 & type == "original_plan" & year == doc_year & level %in% c("main_group", "subgroup"), .(year, type, level, huncode, value)],
   HunData[year == 2026 & type == "original_plan" & year == doc_year & level %in% c("main_group", "subgroup"), .(year, type, level, huncode, value)],
   HunData[year == 2027 & type == "original_plan" & year == doc_year & level %in% c("main_group", "subgroup"), .(year, type, level, huncode, value)],
   HunData[doc_type == "Zarszamadas" & type == "actual" & year == doc_year & level %in% c("main_group", "subgroup"), .(year, type, level, huncode, value)],
