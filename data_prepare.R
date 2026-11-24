@@ -115,7 +115,7 @@ DeflatorData[, deflatorP3S13 := cumprod(deflatorP3S13), .(geo)]
 DeflatorData[, deflatorGDP := deflatorGDP[match(2025, year)] / deflatorGDP, .(geo)]
 DeflatorData[, deflatorP3S13 := deflatorP3S13[match(2025, year)] / deflatorP3S13, .(geo)]
 
-GDPData <- NAMA10Data[freq == "A" & unit == "CP_MNAC" & na_item == "B1GQ" & geo == geos & !is.na(values),
+GDPData <- NAMA10Data[freq == "A" & unit == "CP_MNAC" & na_item == "B1GQ" & geo %in% geos & !is.na(values),
                       .(geo, year = year(time), gdp = values)]
 if(nrow(GDPData[geo == "HU" & year == 2026]) == 0) GDPData <- rbind(GDPData, data.table(geo = "HU", year = 2026, gdp = 92303000))
 if(nrow(GDPData[geo == "HU" & year == 2027]) == 0) GDPData <- rbind(GDPData, data.table(geo = "HU", year = 2027, gdp = 97716000))
