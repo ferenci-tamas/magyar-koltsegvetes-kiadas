@@ -81,6 +81,35 @@ kiadas_dependency <- htmltools::htmlDependency(
                 onFilter: function(group, fn) {
                 new crosstalk.FilterHandle(group).on('change', function(e) { fn(e.value); });
                 fn(crosstalk.group(group).var('filter').get());
+                },
+                // The lines of the tooltip of a category's planned and actual spending in a
+                // year, in a plan_actual_chart() or a plan_actual_heatmap(): the `marker` of its
+                // point or cell, the `name` of the category and the `year`, then the `plan` and
+                // the `actual` value, named by `labels`, followed by `unit`, with at most
+                // `digits` decimals (or two significant digits if that's more precise, as in
+                // the other tooltips), and the deviation from the plan, in the same unit (in
+                // percentage points between percentages) and, unless there's no plan to compare
+                // with (a plan of 0), relative to the plan
+                planActualTooltip: function(marker, name, year, plan, actual, labels, unit, digits) {
+                function number(value, signed) {
+                return Number(value).toLocaleString('hu-HU', {
+                maximumFractionDigits: digits, maximumSignificantDigits: 2,
+                roundingPriority: 'morePrecision', signDisplay: signed ? 'exceptZero' : 'auto'
+                });
+                }
+                function bold(text) { return '<b style="white-space: nowrap">' + text + '</b>'; }
+                var deviation = number(actual - plan, true) + (unit === '%' ? ' százalékpont' : unit);
+                if (plan) {
+                deviation += ' (' + (100 * (actual / plan - 1)).toLocaleString('hu-HU', {
+                maximumFractionDigits: 1, signDisplay: 'exceptZero'
+                }) + '%)';
+                }
+                return [
+                marker + ' ' + name + ', ' + year,
+                labels[0] + ': ' + bold(number(plan) + unit),
+                labels[1] + ': ' + bold(number(actual) + unit),
+                'Eltérés a tervtől: ' + bold(deviation)
+                ];
                 }
                 };
                 })();
@@ -1154,17 +1183,20 @@ add_category_lines <- function(chart, var, axis_name, unit_suffix, fraction_digi
 # coloured in the same colours on a linear scale symmetric around 0 instead (see
 # restyle() below). As the y axis only shows the codes, the legend
 # lists the full names of the rows, `row_names` (by code), and so does the tooltip,
-# with the value of the hovered cell, followed by `unit_suffix`, with at most
-# `fraction_digits` decimals (each either one for all the columns of `var`, or a
-# list of one for each, by column), and the weight of the row, as `weight_label`
-# says. The filters of the crosstalk group `group` leave the rows of the parts they
-# pick, and the years from their first to their last. `sizes` also gives the
-# average height of a row (`row`) and the least height of the plot (`plot`), in px,
-# as add_chart_layout() lays it out
+# with the year and the value of the hovered cell, followed by `unit_suffix`, with
+# at most `fraction_digits` decimals or, with `plan_actual` (the names of the plan
+# and the actual spending), with what the tooltip of a plan_actual_chart() shows of
+# a point (see kiadas.planActualTooltip()), from the columns `plan` and `actual`,
+# with the same unit and decimals; and then with the weight of the row, as
+# `weight_label` says. The filters of the crosstalk group `group` leave the rows of
+# the parts they pick, and the years from their first to their last. `sizes` also
+# gives the average height of a row (`row`) and the least height of the plot
+# (`plot`), in px, as add_chart_layout() lays it out
 add_category_heatmap <- function(chart, var, axis_name, row_names, group,
                                  unit_suffix, fraction_digits, sizes, row_scale,
                                  linear = character(), base_weights = TRUE,
-                                 weight_label = "Súlya a bázisévben") {
+                                 weight_label = "Súlya a bázisévben",
+                                 plan_actual = NULL) {
   # ColorBrewer's RdBu, from decrease (red) to increase (blue), but light grey in the
   # middle (see above), spread evenly over the log2 of the ratios from -1 to 1, and
   # blended in the CIELAB colour space, where the lightness changes evenly
@@ -1241,18 +1273,14 @@ add_category_heatmap <- function(chart, var, axis_name, row_names, group,
         // The data as it came, before the slider divides it by the base year (see
         // add_base_year_slider()), and the series
         var source = option.dataset[0].source, series = chart.getModel().getSeriesByIndex(0);
+        var format = new Intl.NumberFormat('hu-HU', {
+          maximumFractionDigits: data.digits, maximumSignificantDigits: 2,
+          roundingPriority: 'morePrecision'
+        });
         var percent = new Intl.NumberFormat('hu-HU', {
           maximumFractionDigits: 1, maximumSignificantDigits: 2,
           roundingPriority: 'morePrecision'
         });
-        // A value of the column `column`, as in the tooltip of the lines, with its unit
-        function format(value, column) {
-          var digits = typeof data.digits === 'number' ? data.digits : data.digits[column];
-          return Number(value).toLocaleString('hu-HU', {
-            maximumFractionDigits: digits, maximumSignificantDigits: 2,
-            roundingPriority: 'morePrecision'
-          }) + (typeof data.unit === 'string' ? data.unit : data.unit[column]);
-        }
         // The colour scale (see above), in the font and the colour of the labels of
         // the axes: a bar of the colours, with ticks and labels on its right, the
         // labels at the ends within its height, so that it lines up with the plot
@@ -1305,16 +1333,22 @@ add_category_heatmap <- function(chart, var, axis_name, row_names, group,
 
         chart.setOption({
           // The year, the full name of the row and the value of the hovered cell, as
-          // in the tooltip of the lines, and the weight of the row (see relayout()).
+          // in the tooltip of the lines or, with data.planActual, as in that of a
+          // plan_actual_chart(), and then the weight of the row (see relayout()).
           // (With crosstalk, p.value is the whole data row as an object)
           tooltip: {
             formatter: function(p) {
               function value(dim) { return p.value[p.dimensionNames[p.encode[dim][0]]]; }
-              var row = rows[value('y')];
-              return value('x') + '<br>' + p.marker + ' ' + data.names[value('y')] +
-                ': <b style=\"white-space: nowrap\">' +
-                format(value('value'), p.dimensionNames[p.encode.value[0]]) + '</b><br>' +
-                data.weightLabel + ': ' + (row ? percent.format(100 * row.share) + '%' : '');
+              var row = rows[value('y')], name = data.names[value('y')];
+              var lines = data.planActual ?
+                kiadas.planActualTooltip(p.marker, name, value('x'), p.value.plan,
+                                         p.value.actual, data.planActual, data.unit,
+                                         data.digits) :
+                [value('x'), p.marker + ' ' + name + ': <b style=\"white-space: nowrap\">' +
+                   format.format(value('value')) + data.unit + '</b>'];
+              lines.push(data.weightLabel + ': ' +
+                         (row ? percent.format(100 * row.share) + '%' : ''));
+              return lines.join('<br>');
             }
           }
         });
@@ -1513,7 +1547,8 @@ add_category_heatmap <- function(chart, var, axis_name, row_names, group,
                    unit = unit_suffix, digits = fraction_digits, scale = scale,
                    sizes = sizes, rowScale = row_scale, colors = as.list(color_at(middles)),
                    columns = as.list(var), linear = as.list(linear),
-                   baseWeights = base_weights, weightLabel = weight_label))
+                   baseWeights = base_weights, weightLabel = weight_label,
+                   planActual = if (!is.null(plan_actual)) as.list(plan_actual)))
 }
 
 # The credit below a category_chart() or a plan_actual_chart() and the x axis,
@@ -2200,6 +2235,13 @@ defer_chart <- function(id) {
   ))
 }
 
+# The names of the two types of data that a plan_actual_chart() and a
+# plan_actual_heatmap() compare, the planned and the actual spending, as elsewhere
+# on the page
+plan_actual_labels <- as.character(
+  RawData$typeLabel[match(c("original_plan", "actual"), RawData$type)]
+)
+
 # The filters and the scatter plot of the planned (on the x axis) against the
 # actual (on the y axis) spending in "Eredmények", in the column `var` of RawData,
 # with a point for each category in each year: for the main groups if the main
@@ -2229,10 +2271,6 @@ plan_actual_chart <- function(axis_name, unit, title = NULL, var = "value",
   scales <- c(linear = "Lineáris", log = "Logaritmikus")
   data <- plan_actual_data(var, ids$group, scales)
   unit_suffix <- unit_suffix_for(unit)
-  # The names of the two types of data, as elsewhere on the page
-  type_labels <- as.character(
-    RawData$typeLabel[match(c("original_plan", "actual"), RawData$type)]
-  )
   # The columns that the chart shows, by category
   shared_data <- crosstalk::SharedData$new(
     data$points[, .(series, yearchr, plan, actual)] |> dplyr::group_by(series),
@@ -2248,8 +2286,8 @@ plan_actual_chart <- function(axis_name, unit, title = NULL, var = "value",
     # Before the line is added (see add_plan_actual_axes()), which isn't a category
     add_part_legend(data$points, ids$group) |>
     add_chart_frame(x_name = axis_name[[1]]) |>
-    add_plan_actual_axes(axis_name[[2]], type_labels, unit_suffix, ids, scales[["log"]],
-                         log_scale) |>
+    add_plan_actual_axes(axis_name[[2]], plan_actual_labels, unit_suffix, ids,
+                         scales[["log"]], log_scale) |>
     add_plan_actual_colors(ids, sort(unique(data$points$yearchr))) |>
     add_chart_description(
       # For each type of the axes
@@ -2258,7 +2296,8 @@ plan_actual_chart <- function(axis_name, unit, title = NULL, var = "value",
         "érték megegyezik a tervezettel"
       )),
       unit_suffix, 1L,
-      points = list(label = "yearchr", x = type_labels[[1]], y = type_labels[[2]])
+      points = list(label = "yearchr", x = plan_actual_labels[[1]],
+                    y = plan_actual_labels[[2]])
     ) |>
     add_chart_layout(title, ids, data$choices, second = FALSE, watch_ids = ids$color) |>
     start_filtered(ids$group)
@@ -2278,7 +2317,7 @@ plan_actual_chart <- function(axis_name, unit, title = NULL, var = "value",
         chart, unit, id = ids$download, choice_id = ids$scale,
         point_columns = setNames(
           c("yearchr", "plan", "actual"),
-          c("Év", paste0(type_labels, if (unit != "") paste0(" [", unit, "]")))
+          c("Év", paste0(plan_actual_labels, if (unit != "") paste0(" [", unit, "]")))
         )
       ),
       defer_chart(ids$chart)
@@ -2392,7 +2431,7 @@ plan_actual_filters <- function(ids, shared_points, ...) {
 # value is negative) to the first tick at or above the largest value, with the
 # ticks spaced as ECharts would space them. The tooltip shows the hovered point's
 # category and year, its plan and actual value (named by `type_labels`, followed by
-# `unit_suffix`), and its deviation from the plan
+# `unit_suffix`), and its deviation from the plan (see kiadas.planActualTooltip())
 add_plan_actual_axes <- function(chart, y_name, type_labels, unit_suffix, ids,
                                  log_value, log_scale = TRUE) {
   axis <- list(
@@ -2430,18 +2469,6 @@ add_plan_actual_axes <- function(chart, y_name, type_labels, unit_suffix, ids,
       function(el, x, data) {
         var chart = echarts.getInstanceByDom(el);
         var source = chart.getOption().dataset[0].source;
-        var format = new Intl.NumberFormat('hu-HU', {
-          maximumFractionDigits: 1, maximumSignificantDigits: 2,
-          roundingPriority: 'morePrecision'
-        });
-        var percent = new Intl.NumberFormat('hu-HU', {
-          maximumFractionDigits: 1, signDisplay: 'exceptZero'
-        });
-        // As `format`, but with a sign
-        var signed = new Intl.NumberFormat('hu-HU', {
-          maximumFractionDigits: 1, maximumSignificantDigits: 2,
-          roundingPriority: 'morePrecision', signDisplay: 'exceptZero'
-        });
 
         // The largest of 1, 2 and 5 times a power of 10 that is at most `value`
         // (with `up`, the smallest that is at least `value`), for a positive `value`:
@@ -2521,28 +2548,15 @@ add_plan_actual_axes <- function(chart, y_name, type_labels, unit_suffix, ids,
         // they change the type of the axes even if the points stay the same
         scale.addEventListener('change', update);
 
-        function bold(text) {
-          return '<b style=\"white-space: nowrap\">' + text + '</b>';
-        }
         chart.setOption({
           tooltip: {
             formatter: function(p) {
-              // With crosstalk, p.value is the whole data row as an object
+              // With crosstalk, p.value is the whole data row as an object. With at
+              // most one decimal, as in the description for screen readers
               function value(dim) { return p.value[p.dimensionNames[p.encode[dim][0]]]; }
-              var plan = value('x'), actual = value('y');
-              var lines = [
-                p.marker + ' ' + p.seriesName + ', ' + p.value.yearchr,
-                data.labels[0] + ': ' + bold(format.format(plan) + data.unit),
-                data.labels[1] + ': ' + bold(format.format(actual) + data.unit)
-              ];
-              // The difference (between percentages, in percentage points) and, unless
-              // there's no plan to compare with (a plan of 0, on linear axes), the
-              // difference relative to the plan
-              var difference = signed.format(actual - plan) +
-                (data.unit === '%' ? ' százalékpont' : data.unit);
-              if (plan) difference += ' (' + percent.format(100 * (actual / plan - 1)) + '%)';
-              lines.push('Eltérés a tervtől: ' + bold(difference));
-              return lines.join('<br>');
+              return kiadas.planActualTooltip(p.marker, p.seriesName, p.value.yearchr,
+                                              value('x'), value('y'), data.labels,
+                                              data.unit, 1).join('<br>');
             }
           }
         });
@@ -2726,16 +2740,19 @@ add_plan_actual_colors <- function(chart, ids, years) {
 # first one at first): the ratio of the actual spending to the plan ("ratio",
 # missing where the plan isn't positive), on the log scale of ratios, or their
 # difference ("difference"), on a linear scale around 0, with `axis_name` on the y
-# axis for each, as it tells what the colours show. `unit` (unless it's "") follows
-# the differences in the tooltip. The heights of the rows follow the categories'
-# weights, their shares of the planned spending summed over the years shown
-# (proportional to the weights' square roots with `row_scale = "sqrt"`, or to the
-# weights themselves with "linear"). As in plan_actual_chart(), only the Hungarian
-# classification has both types of data, and a year without both leaves the cell
-# empty (as 2002, without a plan). The chart has no title if `title` is NULL, else
-# `title` followed by the name of the chosen main group (unless it's "Összesen").
-# As in category_chart(), each call has its own crosstalk group and element ids
-# (made from `id`), and the chart is only drawn once it comes near the viewport
+# axis for each, as it tells what the colours show. The tooltip shows the hovered
+# cell as that of a plan_actual_chart() shows a point: its category and year, its
+# plan and actual value, followed by `unit` (unless it's ""), and its deviation
+# from the plan, and then the weight of its row. The heights of the rows follow the
+# categories' weights, their shares of the planned spending summed over the years
+# shown (proportional to the weights' square roots with `row_scale = "sqrt"`, or
+# to the weights themselves with "linear"). As in plan_actual_chart(), only the
+# Hungarian classification has both types of data, and a year without both leaves
+# the cell empty (as 2002, without a plan). The chart has no title if `title` is
+# NULL, else `title` followed by the name of the chosen main group (unless it's
+# "Összesen"). As in category_chart(), each call has its own crosstalk group and
+# element ids (made from `id`), and the chart is only drawn once it comes near the
+# viewport
 plan_actual_heatmap <- function(axis_name, unit, title = NULL, var = "value",
                                 metrics = c("Hányados" = "ratio",
                                             "Különbség" = "difference"),
@@ -2746,8 +2763,8 @@ plan_actual_heatmap <- function(axis_name, unit, title = NULL, var = "value",
   ids <- category_ids(id)
   data <- plan_actual_data(var, ids$group, complete = FALSE)
   columns <- unname(metrics)
-  # By column: a ratio has no unit, and needs two decimals, as in relative mode in
-  # category_chart()
+  # By column, in the description for screen readers: a ratio has no unit, and
+  # needs two decimals, as in relative mode in category_chart()
   unit_suffix <- list(ratio = "", difference = unit_suffix_for(unit))
   fraction_digits <- list(ratio = 2L, difference = 1L)
   # The plan's share of all the planned spending of its year (in %), which weights
@@ -2760,14 +2777,16 @@ plan_actual_heatmap <- function(axis_name, unit, title = NULL, var = "value",
   # puts them on the x axis in the order they first appear in, rounded as in
   # round_for_chart()
   rows <- shares[data$points, on = .(code, yearchr)][, .(
-    yearchr, code, key,
+    yearchr, code, key, plan, actual,
     ratio = signif(fifelse(plan > 0, actual / plan, NA_real_), 6),
     difference = round(actual - plan, 4),
     spending = signif(spending, 6)
   )]
   setorder(rows, yearchr)
   shared_data <- crosstalk::SharedData$new(
-    as.data.frame(rows[, c("yearchr", "code", columns, "spending"), with = FALSE]),
+    # With the plan and the actual value, for the tooltip
+    as.data.frame(rows[, c("yearchr", "code", columns, "plan", "actual", "spending"),
+                       with = FALSE]),
     key = as.character(rows$key), group = ids$group
   )
   row_names <- heatmap_row_names(data$points)
@@ -2775,10 +2794,13 @@ plan_actual_heatmap <- function(axis_name, unit, title = NULL, var = "value",
   chart <- shared_data |>
     # As in category_chart()
     e_chart(yearchr, hoverLayerThreshold = 1e6, elementId = ids$chart) |>
-    add_category_heatmap(columns, axis_name, row_names, ids$group, unit_suffix,
-                         fraction_digits, heatmap_sizes, row_scale,
+    # Its tooltip gives the plan and the actual value, with at most one decimal, as
+    # that of plan_actual_chart()
+    add_category_heatmap(columns, axis_name, row_names, ids$group,
+                         unit_suffix_for(unit), 1L, heatmap_sizes, row_scale,
                          linear = intersect(columns, "difference"), base_weights = FALSE,
-                         weight_label = "Átlagos súlya a tervekben") |>
+                         weight_label = "Átlagos súlya a tervekben",
+                         plan_actual = plan_actual_labels) |>
     add_chart_frame() |>
     add_chart_description(
       paste("Hőtérkép, a sorok magassága a kategóriák tervekben mért átlagos",
@@ -2942,10 +2964,11 @@ Az ábra nagyon közvetlen, további szubjektív döntések és információtöm
 
 ```{r}
 plan_actual_heatmap(
-  axis_name = c("Tényleges kiadás\n[a tervezett kiadás többszörösében]",
-                "Tényleges kiadás − tervezett kiadás\n[Mrd Ft]"),
+  axis_name = c("A tényleges és a tervezett kiadás hányadosa",
+                "A tényleges és a tervezett kiadás különbsége [Mrd Ft]"),
   unit = "Mrd Ft",
   title = "A magyar költségvetés terveinek teljesülése"
 )
 ```
 
+(Ez az ábra is él azzal az eszközzel, hogy az oszlopok magassága eltérő, itt ez a tervbeli arányokat tükrözi, de szemben az előző esettel, ez itt csak illusztratív, itt ugyanis nincs olyan követelmény, hogy az egyes eltérések nullára zárjanak, hiszen a ténylegesen elköltött pénz összességében is lehet több, mint a tervezett.)

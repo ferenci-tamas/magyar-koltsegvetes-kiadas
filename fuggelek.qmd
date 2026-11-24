@@ -1,4 +1,6 @@
-# Technikai részletek
+# Függelék
+
+## Technikai részletek
 
 Az adatok feldolgozása [R nyelven](https://ferenci-tamas.github.io/r-nyelv/) történt, a weboldal [Quarto](https://quarto.org/) alapú, az interaktív ábrák [ECharts](https://echarts.apache.org/en/index.html) segítségével készültek. Az ábrák kódolásához Claude Opus 5.5-öt használtam.
 
