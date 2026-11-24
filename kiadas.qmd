@@ -8,17 +8,20 @@ library(echarts4r)
 # aggregates.R
 source("aggregates.R", local = knitr::knit_global())
 
-# data_prepare.R
+# data_prepare.R: the data of every country, by `geo`
 RawData <- readRDS("RawData.rds")
+# Hungary's rows, which all the charts below show (and refer to by their numbers
+# in this table, as CategoryPaths does)
+HURawData <- RawData[geo == "HU"]
 
-# Where each row of RawData sits in the Hungarian and in the COFOG hierarchy:
+# Where each row of HURawData sits in the Hungarian and in the COFOG hierarchy:
 # under its main group (huncodeParent / cofogParent), as "Összesen" if it's the main group
 # itself. Rows present in both (e.g. Egészségügy: F05 = GF07) appear in both
 CategoryPaths <- rbind(
-  RawData[, .(classification = "Magyar", node = huncode, parent = huncodeParent,
-              nameLabel, key = .I)],
-  RawData[, .(classification = "Nemzetközi (COFOG)", node = cofog,
-              parent = cofogParent, nameLabel, key = .I)]
+  HURawData[, .(classification = "Magyar", node = huncode, parent = huncodeParent,
+                nameLabel, key = .I)],
+  HURawData[, .(classification = "Nemzetközi (COFOG)", node = cofog,
+                parent = cofogParent, nameLabel, key = .I)]
 )[!is.na(node)]
 CategoryPaths[, `:=`(
   main = as.character(nameLabel[node == parent][1]),
@@ -746,7 +749,7 @@ add_download_menu <- function(chart, unit, id, choice_id = NULL,
   )
 }
 
-# The filters and the chart of the column `var` of RawData in "Eredmények", with
+# The filters and the chart of the column `var` of HURawData in "Eredmények", with
 # `axis_name` on the y axis and `unit` (unless it's "") after the values in the
 # tooltip. The chart has no title if `title` is NULL, else `title` followed by the
 # name of the chosen main group and, unless it's "Összesen", of the subgroup. If
@@ -887,7 +890,7 @@ heatmap_row_names <- function(paths) {
        as.list(setNames(nameLabel, code)))
 }
 
-# The data of a category_chart() (see there) of the columns `var` of RawData, in
+# The data of a category_chart() (see there) of the columns `var` of HURawData, in
 # the crosstalk group `group`: `shared_paths` for the filters, `shared_data` for
 # the chart and, showing parts (with `stack` or `relative`), the parts, `paths`,
 # and in stack mode the columns of their negative parts, `neg_var`. The filters
@@ -899,19 +902,19 @@ category_data <- function(var, group, stack = FALSE, relative = FALSE,
                           heatmap = FALSE) {
   paths <- neg_var <- NULL
   if (stack || relative) {
-    # A row of RawData in both classifications (e.g. Egészségügy) is a part of a
+    # A row of HURawData in both classifications (e.g. Egészségügy) is a part of a
     # different whole in each, so here a key is a row of CategoryPaths, i.e. a row
-    # of RawData in one classification. The main group dropdown picks the whole: a
-    # main group, made up of its subgroups, or "Összesen", made up of the main
+    # of HURawData in one classification. The main group dropdown picks the whole:
+    # a main group, made up of its subgroups, or "Összesen", made up of the main
     # groups. Each type of data only appears in the classification it comes in
     # (the budget's cash-based data in the Hungarian one, Eurostat's accrual-based
     # data in COFOG), as only there do the parts add up to the whole: the
     # categories mapped from the other classification leave gaps
     native <- c(original_plan = "Magyar", actual = "Magyar",
                 actual_cofog = "Nemzetközi (COFOG)")
-    paths <- CategoryPaths[classification == native[RawData$type[key]], .(
+    paths <- CategoryPaths[classification == native[HURawData$type[key]], .(
       classification, main = fifelse(sub == "Összesen", "Összesen", main),
-      typeLabel = RawData$typeLabel[key], nameLabel, code = node, row = key, key = .I
+      typeLabel = HURawData$typeLabel[key], nameLabel, code = node, row = key, key = .I
     )]
     # A series for each part in each classification, in the order of the codes
     # (stacked in that order). Named by its number, as echarts4r writes the name
@@ -923,11 +926,11 @@ category_data <- function(var, group, stack = FALSE, relative = FALSE,
       # "Összesen" first in the dropdown
       paths[order(main != "Összesen")], key = ~key, group = group
     )
-    chart_data <- RawData[paths$row, c("yearchr", var), with = FALSE]
+    chart_data <- HURawData[paths$row, c("yearchr", var), with = FALSE]
     # A heatmap has a row for each part instead, at its code (unique across the
     # classifications), which labels the row, and with the spending of the part
     if (heatmap) {
-      chart_data[, `:=`(code = paths$code, spending = RawData$value[paths$row],
+      chart_data[, `:=`(code = paths$code, spending = HURawData$value[paths$row],
                         key = paths$key)]
     } else {
       chart_data[, `:=`(series = paths$series, key = paths$key)]
@@ -965,10 +968,10 @@ category_data <- function(var, group, stack = FALSE, relative = FALSE,
       key = as.character(chart_data$key), group = group
     )
   } else {
-    # A key is the row number in RawData (the default key of shared_data)
+    # A key is the row number in HURawData (the default key of shared_data)
     shared_paths <- crosstalk::SharedData$new(CategoryPaths, key = ~key, group = group)
     shared_data <- crosstalk::SharedData$new(
-      round_for_chart(RawData[, c("typeLabel", "yearchr", var), with = FALSE], var) |>
+      round_for_chart(HURawData[, c("typeLabel", "yearchr", var), with = FALSE], var) |>
         dplyr::group_by(typeLabel),
       group = group
     )
@@ -978,7 +981,7 @@ category_data <- function(var, group, stack = FALSE, relative = FALSE,
 }
 
 # Rounds the columns `cols` of the chart data `dt` of category_data() (by
-# reference, so `dt` must be a copy of RawData's columns), which echarts4r would
+# reference, so `dt` must be a copy of HURawData's columns), which echarts4r would
 # otherwise embed in the page with 16 significant digits: the amounts in Mrd Ft to
 # 4 decimals, the precision of the source data (0.1 million Ft), so they stay
 # exact, and the percentages to 6 significant digits rather than to a number of
@@ -2001,7 +2004,7 @@ add_chart_layout <- function(chart, title, ids, paths = NULL, relative = FALSE,
   # subgroup dropdown or, showing parts, of the type (or for each choice of the
   # main group dropdown alone, "" for "Összesen")
   if (!is.null(title)) {
-    name_of <- \(label) RawData$name[match(label, RawData$nameLabel)]
+    name_of <- \(label) HURawData$name[match(label, HURawData$nameLabel)]
     ends <- if (!second) {
       unique(paths[, .(main)])[, end := fifelse(main == "Összesen", "", name_of(main))]
     } else if (parts) {
@@ -2239,11 +2242,11 @@ defer_chart <- function(id) {
 # plan_actual_heatmap() compare, the planned and the actual spending, as elsewhere
 # on the page
 plan_actual_labels <- as.character(
-  RawData$typeLabel[match(c("original_plan", "actual"), RawData$type)]
+  HURawData$typeLabel[match(c("original_plan", "actual"), HURawData$type)]
 )
 
 # The filters and the scatter plot of the planned (on the x axis) against the
-# actual (on the y axis) spending in "Eredmények", in the column `var` of RawData,
+# actual (on the y axis) spending in "Eredmények", in the column `var` of HURawData,
 # with a point for each category in each year: for the main groups if the main
 # group dropdown is at "Összesen", else for the subgroups of the chosen main group
 # or, if it has none, for the main group itself, coloured by category. Only the
@@ -2327,7 +2330,7 @@ plan_actual_chart <- function(axis_name, unit, title = NULL, var = "value",
 }
 
 # The data of a plan_actual_chart() or a plan_actual_heatmap() (see there) of
-# the column `var` of RawData, rounded (see round_for_chart()), in the crosstalk
+# the column `var` of HURawData, rounded (see round_for_chart()), in the crosstalk
 # group `group`: `points`, a row for each Hungarian category (its `code` and
 # `nameLabel`) in each year (`yearchr`) with both a plan (`plan`) and an actual
 # value (`actual`) or, with `complete = FALSE`, in each year from the first to the
@@ -2344,10 +2347,10 @@ plan_actual_chart <- function(axis_name, unit, title = NULL, var = "value",
 plan_actual_data <- function(var, group, scales = NULL, complete = TRUE) {
   types <- c(original_plan = "plan", actual = "actual")
   long <- CategoryPaths[
-    classification == "Magyar" & RawData$type[key] %chin% names(types), .(
+    classification == "Magyar" & HURawData$type[key] %chin% names(types), .(
       main = fifelse(sub == "Összesen", "Összesen", main), nameLabel, code = node,
-      yearchr = RawData$yearchr[key], type = unname(types[RawData$type[key]]),
-      value = RawData[[var]][key]
+      yearchr = HURawData$yearchr[key], type = unname(types[HURawData$type[key]]),
+      value = HURawData[[var]][key]
     )
   ]
   # Named as the column, which tells how it's rounded
@@ -2730,7 +2733,7 @@ add_plan_actual_colors <- function(chart, ids, years) {
 }
 
 # The filters and the heatmap of how much the actual spending in "Eredmények", in
-# the column `var` of RawData, deviated from the plan over the years, as the
+# the column `var` of HURawData, deviated from the plan over the years, as the
 # heatmap of category_chart() (see add_category_heatmap()): a row for each
 # category, for the main groups if the main group dropdown is at "Összesen", else
 # for the subgroups of the chosen main group or, if it has none, for the main group
@@ -2770,8 +2773,8 @@ plan_actual_heatmap <- function(axis_name, unit, title = NULL, var = "value",
   # The plan's share of all the planned spending of its year (in %), which weights
   # its row
   shares <- CategoryPaths[
-    classification == "Magyar" & RawData$type[key] == "original_plan",
-    .(code = node, yearchr = RawData$yearchr[key], spending = RawData$prop[key])
+    classification == "Magyar" & HURawData$type[key] == "original_plan",
+    .(code = node, yearchr = HURawData$yearchr[key], spending = HURawData$prop[key])
   ]
   # A row for each category in each year, in the order of the years, as echarts4r
   # puts them on the x axis in the order they first appear in, rounded as in
