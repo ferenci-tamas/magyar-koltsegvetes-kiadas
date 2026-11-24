@@ -2974,4 +2974,4 @@ plan_actual_heatmap(
 )
 ```
 
-(Ez az ábra is él azzal az eszközzel, hogy az oszlopok magassága eltérő, itt ez a tervbeli arányokat tükrözi, de szemben az előző esettel, ez itt csak illusztratív, itt ugyanis nincs olyan követelmény, hogy az egyes eltérések nullára zárjanak, hiszen a ténylegesen elköltött pénz összességében is lehet több, mint a tervezett.)
+(Ez az ábra is él azzal az eszközzel, hogy az oszlopok magassága eltérő, itt ez a tervbeli arányokat tükrözi, de szemben az előző esettel, ez itt csak illusztratív: itt nincs olyan követelmény, hogy az egyes eltérések nullára zárjanak, hiszen a ténylegesen elköltött pénz összességében is eltérhet attól, mint ami a tervezett volt.)
