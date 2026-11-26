@@ -12,7 +12,7 @@ RawData <- readRDS("RawData.rds")
 
 Az adatok feldolgozása [R nyelven](https://ferenci-tamas.github.io/r-nyelv/) történt, a weboldal [Quarto](https://quarto.org/) alapú, az interaktív ábrák [ECharts](https://echarts.apache.org/en/index.html) segítségével készültek. Az ábrák kódolásához Claude Opus 5.5-öt használtam.
 
-Az adatfeldolgozás lépései az [aggregates.R](https://github.com/ferenci-tamas/magyar-koltsegvetes-kiadas/blob/main/aggregates.R) és a [data_prepare.R](https://github.com/ferenci-tamas/magyar-koltsegvetes-kiadas/blob/main/data_prepare.R) fájlokban megtalálhatóak, így az oldalam ilyen szempontból is transzparens és reprodukálható; itt a legfontosabb elemeket emelem most ki külön is.
+Az adatfeldolgozás lépései az [aggregates.R](https://github.com/ferenci-tamas/magyar-koltsegvetes-kiadas/blob/main/aggregates.R) és a [data_prepare.R](https://github.com/ferenci-tamas/magyar-koltsegvetes-kiadas/blob/main/data_prepare.R) fájlokban megtalálhatóak (az ábrákhoz szükséges függvények a [charts.R](https://github.com/ferenci-tamas/magyar-koltsegvetes-kiadas/blob/main/charts.R) fájlban vannak), így az oldalam ilyen szempontból is transzparens és reprodukálható; itt a legfontosabb elemeket emelem most ki külön is.
 
 Először is, az adatforrások a következők:
 
