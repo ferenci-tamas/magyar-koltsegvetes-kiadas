@@ -2870,15 +2870,18 @@ group_names <- c(EU27 = "EU27", V4 = "V4", EU15 = "EU15", EU11 = "EU11")
 # the most countries, as the latest years may only have data for a few). If `var`
 # has several columns, the chart plots the one chosen with radio buttons labelled
 # `var_label`, which offer them by their names (the first one at first), and
-# `axis_name` may give a different name for each. The bar of the country `highlight`
-# (by its code; none if NULL) stands out in another colour, with its name in bold,
-# and those of the groups of countries are grey. The chart has no title if `title`
-# is NULL, else `title` followed by the names of the main group and of the subgroup
-# (unless it's "Összesen"), as in category_chart(), and the year. As in
-# category_chart(), each call has its own element ids (made from `id`), and the
-# chart is only drawn once it comes near the viewport, then starting from the
-# current choices of its controls. The helpers below and those of category_chart()
-# make its parts
+# `axis_name` may give a different name for each. The columns relative to the main
+# group (named ...Parent, like propParent) are only offered while a subgroup is
+# chosen, not for "Összesen" (see country_filters()). With `unit = "%"`, the y axis
+# ends at 100 at most, unless a value shown is above it (see percent_axis_max()).
+# The bar of the country `highlight` (by its code; none if NULL) stands out in
+# another colour, with its name in bold, and those of the groups of countries are
+# grey. The chart has no title if `title` is NULL, else `title` followed by the
+# names of the main group and of the subgroup (unless it's "Összesen"), as in
+# category_chart(), and the year. As in category_chart(), each call has its own
+# element ids (made from `id`), and the chart is only drawn once it comes near the
+# viewport, then starting from the current choices of its controls. The helpers
+# below and those of category_chart() make its parts
 country_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
                           highlight = "HU", id = paste0(var[[1]], "_country")) {
   # Named as category_ids() names them, as add_chart_layout() reads them. The
@@ -2927,7 +2930,7 @@ country_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
                   return p.name + '<br>' + p.marker + ' ' + p.seriesName +
                     ': <b style=\"white-space: nowrap\">' + value + '%s</b>';
                 }", fraction_digits, unit_suffix))) |>
-    e_y_axis(name = axis_name[[1]],
+    e_y_axis(name = axis_name[[1]], max = percent_axis_max(unit),
              axisLabel = list(
                # As in add_category_lines()
                formatter = htmlwidgets::JS("
@@ -3044,10 +3047,12 @@ country_values_element <- function(id, values) {
 # `categories` (see country_data()), at first at the one labelled `category`, and
 # that of the subgroups of the chosen one, after "Összesen" for the main group as a
 # whole, which is chosen whenever the main group changes; the radio buttons of the
-# columns `var`, if there are several, labelled `var_label`; and unless `years` is
-# NULL (as in a country_lines_chart() or a country_heatmap()), the slider of the
-# year, at first at `year` among `years`, which the chart takes over once it's drawn
-# (see add_country_bars())
+# columns `var`, if there are several, labelled `var_label`, which only offer the
+# columns relative to the main group (named ...Parent, like propParent) while a
+# subgroup is chosen (see below); and unless `years` is NULL (as in a
+# country_lines_chart() or a country_heatmap()), the slider of the year, at first at
+# `year` among `years`, which the chart takes over once it's drawn (see
+# add_country_bars())
 country_filters <- function(ids, categories, category, var, var_label, years = NULL,
                             year = NULL) {
   # The choices of the subgroup dropdown, for each main group (by label)
@@ -3056,6 +3061,9 @@ country_filters <- function(ids, categories, category, var, var_label, years = N
     lapply(groups, \(group) c("Összesen", group[code != main, label])),
     vapply(groups, \(group) group[code == main, label], "")
   )
+  # The columns relative to the main group, which are 100% for every country for
+  # the main group as a whole
+  parent_var <- unname(var[endsWith(var, "Parent")])
   
   htmltools::div(
     class = "d-flex flex-wrap align-items-end row-gap-2 mb-3",
@@ -3078,30 +3086,12 @@ country_filters <- function(ids, categories, category, var, var_label, years = N
                             "Csoport:"),
       htmltools::tags$select(id = ids$sub, class = "form-select form-select-sm")
     ),
-    # Fills in the subgroup dropdown, whenever the main group changes, and at once,
-    # as the page is read (as in filter_select_dependent()), for the main group
-    # chosen then, which the browser may have restored when reloading the page. The
-    # change of the subgroup is what the chart follows (see add_country_bars())
-    htmltools::tags$script(htmltools::HTML(sprintf(
-      "(function() {
-        var subgroups = %s;
-        var main = document.getElementById(%s), sub = document.getElementById(%s);
-        function update() {
-          sub.replaceChildren.apply(sub, subgroups[main.value].map(function(label) {
-            return new Option(label, label);
-          }));
-          sub.dispatchEvent(new Event('change'));
-        }
-        main.addEventListener('change', update);
-        update();
-      })();",
-      jsonlite::toJSON(subgroups),
-      jsonlite::toJSON(ids$main, auto_unbox = TRUE),
-      jsonlite::toJSON(ids$sub, auto_unbox = TRUE)
-    ))),
     if (length(var) > 1) htmltools::div(
       # Full width on phones, where it's alone in its row
       class = "flex-grow-1 flex-md-grow-0",
+      # While the buttons offer only one column, as they may at first, for
+      # "Összesen" (see below)
+      hidden = if (length(setdiff(var, parent_var)) < 2) NA,
       radio_buttons(id = ids$var, label = var_label, choices = var, compact = TRUE)
     ),
     if (!is.null(years)) htmltools::div(
@@ -3117,7 +3107,63 @@ country_filters <- function(ids, categories, category, var, var_label, years = N
       htmltools::tags$input(type = "range", class = "form-range", id = ids$base,
                             min = 0, max = length(years) - 1, step = 1,
                             value = match(year, years) - 1, `aria-valuetext` = year)
-    )
+    ),
+    # Fills in the subgroup dropdown, whenever the main group changes, and at once,
+    # as the page is read (as in filter_select_dependent()), for the main group
+    # chosen then, which the browser may have restored when reloading the page. The
+    # change of the subgroup is what the chart follows (see add_country_bars()).
+    # Whenever the subgroup changes, the radio buttons (if any) are updated first, as
+    # the chart only starts listening once it's drawn: as in add_column_choice(),
+    # while the subgroup dropdown is at "Összesen", they don't offer the columns
+    # relative to the main group, and if one of those is chosen, the first column
+    # offered is checked (and plotted) instead, until a subgroup is chosen again.
+    # The buttons are hidden while they offer only one column. After the controls,
+    # which it uses
+    htmltools::tags$script(htmltools::HTML(sprintf(
+      "(function() {
+        var subgroups = %s, parentColumns = %s;
+        var main = document.getElementById(%s), sub = document.getElementById(%s);
+        var choice = document.getElementById(%s);
+        var inputs = choice ? Array.from(choice.querySelectorAll('input')) : [];
+        // The column chosen with the buttons, kept while it isn't offered
+        var chosen = choice && choice.querySelector('input:checked').value;
+
+        function update() {
+          sub.replaceChildren.apply(sub, subgroups[main.value].map(function(label) {
+            return new Option(label, label);
+          }));
+          sub.dispatchEvent(new Event('change'));
+        }
+
+        function offer() {
+          var whole = !sub.value || sub.value === 'Összesen';
+          var offered = inputs.filter(function(input) {
+            var shown = !whole || parentColumns.indexOf(input.value) < 0;
+            input.hidden = input.labels[0].hidden = !shown;
+            return shown;
+          });
+          (offered.find(function(input) { return input.value === chosen; }) ||
+            offered[0]).checked = true;
+          // The div around the buttons, so that they leave no gap in the row
+          choice.parentElement.hidden = offered.length < 2;
+        }
+
+        main.addEventListener('change', update);
+        if (choice) {
+          choice.addEventListener('change', function() {
+            chosen = choice.querySelector('input:checked').value;
+          });
+          sub.addEventListener('change', offer);
+        }
+        update();
+      })();",
+      jsonlite::toJSON(subgroups),
+      jsonlite::toJSON(parent_var),
+      jsonlite::toJSON(ids$main, auto_unbox = TRUE),
+      jsonlite::toJSON(ids$sub, auto_unbox = TRUE),
+      # No element has this id if there's only one column
+      jsonlite::toJSON(ids$var, auto_unbox = TRUE)
+    )))
   )
 }
 
@@ -3221,6 +3267,30 @@ add_country_bars <- function(chart, ids, data, columns, axis_name, year, highlig
   ))
 }
 
+# The end of the y axis of a country_chart() or a country_lines_chart() of values in
+# `unit`: unless it's "%", NULL, for ECharts' own end. Their percentages are shares
+# of a whole (see add_country_heatmap()), so with "%", the axis ends at 100 at most
+# while no value shown (no bar, or no value of the lines switched on in the legend)
+# is above it. ECharts rounds the end of the axis up to a multiple of its step,
+# which takes it beyond 100 when large negative values widen its range (as to 120,
+# with a step of 30), and then it ends at 100 instead. A value above 100 (a part
+# larger than its whole, as when the other parts are negative) is left to ECharts,
+# so that it's shown in full
+percent_axis_max <- function(unit) {
+  if (unit != "%") return(NULL)
+  htmlwidgets::JS("
+    function(value) {
+      if (value.max > 100) return null;
+      // ECharts' own end, for the values shown: a value axis includes 0, and its
+      // step is a fifth of its range, rounded by ECharts' nice() to 1, 2, 3 or 5
+      // times a power of 10
+      var lo = Math.min(value.min, 0), hi = Math.max(value.max, 0);
+      var step = echarts.number.nice((hi - lo) / 5, true);
+      return Math.ceil(Number((hi / step).toPrecision(12))) * step > 100 ? 100 : null;
+    }
+  ")
+}
+
 # The filters and the line chart of how much each country spent on a category of
 # COFOG over the years, by Eurostat's accrual-based data (type "actual_cofog") in
 # RawData, in the column `var`: a line for each country (or group of countries: see
@@ -3229,17 +3299,20 @@ add_country_bars <- function(chart, ids, data, columns, axis_name, year, highlig
 # chosen with two dropdowns, as in country_chart() (at first Egészségügy as a
 # whole). If `var` has several columns, the chart plots the one chosen with radio
 # buttons labelled `var_label`, which offer them by their names (the first one at
-# first), and `axis_name` may give a different name for each. The legend lists all
-# the countries, but at first only the lines of `shown` (by their codes) are on, and
-# the others can be switched on there: `shown` come first in the legend, in their
-# order, and the others after them, in alphabetical order. The line of the country
-# `highlight` (by its code; none if NULL) stands out in orange, as its bar in a
-# country_chart(), and is thicker than the others. The chart has no title if `title`
-# is NULL, else `title` followed by the names of the main group and of the subgroup
-# (unless it's "Összesen"), as in category_chart(). As in category_chart(), each call
-# has its own element ids (made from `id`), and the chart is only drawn once it comes
-# near the viewport, then starting from the current choices of its controls. The
-# helpers of country_chart() and of category_chart() make its parts
+# first), and `axis_name` may give a different name for each; the columns relative
+# to the main group only while a subgroup is chosen, as in country_chart(). The
+# legend lists all the countries, but at first only the lines of `shown` (by their
+# codes) are on, and the others can be switched on there: `shown` come first in the
+# legend, in their order, and the others after them, in alphabetical order. The line
+# of the country `highlight` (by its code; none if NULL) stands out in orange, as its
+# bar in a country_chart(), and is thicker than the others. With `unit = "%"`, the
+# y axis ends at 100 at most, unless a line switched on in the legend has a value
+# above it, as in country_chart(). The chart has no title if `title` is NULL, else
+# `title` followed by the names of the main group and of the subgroup (unless it's
+# "Összesen"), as in category_chart(). As in category_chart(), each call has its own
+# element ids (made from `id`), and the chart is only drawn once it comes near the
+# viewport, then starting from the current choices of its controls. The helpers of
+# country_chart() and of category_chart() make its parts
 country_lines_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
                                 highlight = "HU",
                                 shown = c(highlight, "EU27", "EU15", "EU11", "V4"),
@@ -3303,7 +3376,7 @@ country_lines_chart <- function(var, axis_name, unit, title = NULL, var_label = 
                         ': <b style=\"white-space: nowrap\">' + value + '%s</b>';
                     }).join('<br>');
                 }", fraction_digits, unit_suffix))) |>
-    e_y_axis(name = axis_name[[1]],
+    e_y_axis(name = axis_name[[1]], max = percent_axis_max(unit),
              axisLabel = list(
                # As in add_category_lines()
                formatter = htmlwidgets::JS("
@@ -3428,17 +3501,19 @@ add_country_lines <- function(chart, ids, data, lines, columns, axis_name, highl
 # group_names), labelled by its name, and a column for each year with data for the
 # category, with each cell coloured by the country's value in the year (see
 # add_country_heatmap()), `axis_name` on the y axis, as it tells what the colours
-# show, and `unit` (unless it's "") after the values in the tooltip. Where a country
+# show, and `unit` (unless it's "") after the values in the tooltip (with "%", the
+# colour scale ends at 100 at most: see add_country_heatmap()). Where a country
 # has no value, its cell is left empty (its whole row, if it has none for the
 # category). The category is chosen with two dropdowns, as in country_chart() (at
 # first Egészségügy as a whole). If `var` has several columns, the chart shows the
 # one chosen with radio buttons labelled `var_label`, which offer them by their
 # names (the first one at first), and `axis_name` may give a different name for
-# each. The rows of `top` (by their codes) come first, from the top, in their order,
-# and the others after them, in alphabetical order, as in the legend of a
-# country_lines_chart(), and the name of the country `highlight` (by its code; none
-# if NULL) is in bold, as in a country_chart(). The rows are as tall as those of a
-# category_chart() on average. The chart has no title if `title` is NULL, else
+# each; the columns relative to the main group only while a subgroup is chosen, as
+# in country_chart(). The rows of `top` (by their codes) come first, from the top,
+# in their order, and the others after them, in alphabetical order, as in the legend
+# of a country_lines_chart(), and the name of the country `highlight` (by its code;
+# none if NULL) is in bold, as in a country_chart(). The rows are as tall as those
+# of a category_chart() on average. The chart has no title if `title` is NULL, else
 # `title` followed by the names of the main group and of the subgroup (unless it's
 # "Összesen"), as in category_chart(). As in category_chart(), each call has its own
 # element ids (made from `id`), and the chart is only drawn once it comes near the
@@ -3527,7 +3602,7 @@ country_heatmap <- function(var, axis_name, unit, title = NULL, var_label = NULL
                     ': <b style=\"white-space: nowrap\">' + value + '%s</b>';
                 }", fraction_digits, unit_suffix))) |>
     add_chart_frame() |>
-    add_country_heatmap(ids, data, rows, columns, axis_name, heatmap_sizes) |>
+    add_country_heatmap(ids, data, rows, columns, axis_name, heatmap_sizes, unit) |>
     add_chart_description("Hőtérkép", unit_suffix, fraction_digits, row_names,
                           rows_name = "országok és országcsoportok") |>
     # The title names the chosen main group and subgroup, as in a country_chart()
@@ -3564,10 +3639,17 @@ country_heatmap <- function(var, axis_name, unit, title = NULL, var_label = NULL
 # when it rescued its banks) would leave the others barely told apart. The range is
 # widened to the 5 ticks of the colour scale beside the plot (see
 # kiadas.colorScale()), spaced evenly by the least of 1, 1.5, 2, 2.5, 3, 4, 5, 6 and
-# 8 times a power of 10 that lets them cover it from a multiple of the step. As in
+# 8 times a power of 10 that lets them cover it from a multiple of the step. With
+# `unit = "%"`, the values are percentages of a whole (of the GDP, of the total
+# spending or of the main group's spending), which a category's spending doesn't
+# exceed, so the ticks don't go beyond 100: the range is cut off there, and the
+# ticks start from a multiple of the step low enough for them to end at 100 at
+# most. (A part larger than its whole, as when the other parts are negative, then
+# takes the colour at the top end, as the values beyond the range do.) As in
 # add_category_heatmap(), the colours run in pieces 1/64 of the scale wide, each in
 # the colour of its middle, and the scale is `sizes$scale` px tall
-add_country_heatmap <- function(chart, ids, data, rows, columns, axis_name, sizes) {
+add_country_heatmap <- function(chart, ids, data, rows, columns, axis_name, sizes,
+                                unit = "") {
   # The colours of the middles of the pieces, from the bottom of the scale to its top
   colors <- grDevices::hcl.colors(65, "viridis", rev = TRUE)
   # Its pieces are set below, before any cell is drawn. Its own legend can't label a
@@ -3616,15 +3698,30 @@ add_country_heatmap <- function(chart, ids, data, rows, columns, axis_name, size
       function coloring(values) {
         values = values.slice().sort(function(a, b) { return a - b; });
         var lo = quantile(values, 0.05), hi = quantile(values, 0.95);
+        // The largest tick there may be, if any (see above), which cuts off the range
+        var max = data.scaleMax;
+        if (max != null) {
+          lo = Math.min(lo, max);
+          hi = Math.min(hi, max);
+        }
+        var step, start;
+        // The ticks by the step `s`, from its multiple at or below `lo`, and low
+        // enough for the last of them to be at or below `max`
+        function spread(s) {
+          step = s;
+          var from = max == null ? lo : Math.min(lo, max - 4 * step);
+          start = round(Math.floor(round(from / step)) * step);
+        }
         // If all the values are the same, a step of a quarter of their size, or of 1
         // if they're all 0
-        var step = niceStep((hi - lo) / 4 || Math.abs(hi) / 4 || 1);
-        var start = round(Math.floor(round(lo / step)) * step);
-        // A larger step, while 4 of them from its multiple at or below `lo` would end
-        // below `hi`
+        spread(niceStep((hi - lo) / 4 || Math.abs(hi) / 4 || 1));
+        // A larger step, while the ticks would end below `hi`. If even a step of
+        // `max` doesn't do, the ticks may go beyond it, as larger steps would end
+        // them at 0 at most. (With a `max` of 100, a step of 25 does for any values
+        // within 0 and 100, so only values far below 0 could need that)
         while (round(start + 4 * step) < hi) {
-          step = niceStep(1.01 * step);
-          start = round(Math.floor(round(lo / step)) * step);
+          if (max != null && step >= max) max = null;
+          spread(niceStep(1.01 * step));
         }
         // The bound between the pieces i and i + 1, halfway between their middles,
         // which run from `start` to the last tick
@@ -3685,6 +3782,8 @@ add_country_heatmap <- function(chart, ids, data, rows, columns, axis_name, size
     # The position of each row's country among the countries of `data`
     positions = as.list(match(rows, data$countries) - 1L),
     colors = as.list(colors),
+    # The largest tick there may be (see above)
+    scaleMax = if (unit == "%") 100,
     # The colours of the bar of the scale, from the bottom up
     scale = list(height = sizes$scale,
                  stops = Map(\(offset, color) list(offset = offset, color = color),

@@ -3,7 +3,7 @@
 
 library(data.table)
 source("aggregates.R", local = knitr::knit_global())
-RawData <- readRDS("RawData.rds")
+RawData <- readRDS("koltsegvetes-funkcionalis-kiadas.rds")
 ```
 
 # Függelék

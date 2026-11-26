@@ -153,15 +153,19 @@ RawData[, nameLabel := factor(nameLabel,
 
 RawData[, prop := value / total * 100]
 RawData[, propgdp := value / gdp * 100]
+RawData[, propParent := value / totalParent * 100]
 
 RawData <- rbind(RawData, rbindlist(lapply(seq_along(countries), function(i)
   RawData[type == "actual_cofog" & !is.na(cofog) & geo %in% countries[[i]],
-          .(geo = names(countries)[i], value = NA, total = NA, totalParent = NA, inflation = NA, deflatorGDP = NA,
-            deflatorP3S13 = NA, gdp = NA, gdpEUR = NA, prop = weighted.mean(prop, gdpEUR), propgdp = weighted.mean(propgdp, gdpEUR)),
-          .(type, year, huncode, cofog, huncodeParent, level, cofogParent, name, typeLabel, nameLabel)]
+          .(geo = names(countries)[i], value = NA, total = NA, totalParent = NA,
+            inflation = NA, deflatorGDP = NA, deflatorP3S13 = NA, gdp = NA,
+            gdpEUR = NA, prop = weighted.mean(prop, gdpEUR),
+            propgdp = weighted.mean(propgdp, gdpEUR),
+            propParent = weighted.mean(propParent, gdpEUR)),
+          .(type, year, huncode, cofog, huncodeParent, level, cofogParent, name,
+            typeLabel, nameLabel)]
 )))
 
-RawData[, propParent := value / totalParent * 100]
 RawData[, valuedeflGDP := (value / 1000) * deflatorGDP]
 RawData[, valuedeflP3S13 := (value / 1000) * deflatorP3S13]
 RawData[, valueinfl := (value / 1000) * inflation]
@@ -172,4 +176,7 @@ RawData <- RawData[order(year)]
 
 ################################################################
 
-saveRDS(RawData, "RawData.rds")
+saveRDS(RawData, "koltsegvetes-funkcionalis-kiadas.rds")
+openxlsx::write.xlsx(RawData, "koltsegvetes-funkcionalis-kiadas.xlsx")
+fwrite(RawData, "koltsegvetes-funkcionalis-kiadas.csv", dec = ",", sep =";",
+       bom = TRUE)
