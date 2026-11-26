@@ -226,3 +226,16 @@ country_chart(
   title = "Az európai uniós országok kiadásai"
 )
 ```
+
+Vagy pedig az összetételt:
+
+```{r}
+country_stack_chart(
+  c("Összes kiadás" = "prop", "GDP" = "propgdp", "Főcsoport kiadásai" = "propParent"),
+  axis_name = c("Kiadás [az összes kiadás %-ában]", "Kiadás [a GDP %-ában]",
+                "Kiadás [a főcsoport kiadásainak %-ában]"),
+  unit = "%",
+  var_label = "Viszonyítási alap:",
+  title = "Az európai uniós országok kiadásainak összetétele"
+)
+```

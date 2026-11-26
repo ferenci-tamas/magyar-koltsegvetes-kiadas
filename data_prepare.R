@@ -65,16 +65,29 @@ ESData <- data.table(eurostat::get_eurostat(
 )
 saveRDS(ESData, "ESData.rds")
 ESData <- ESData[time %in% unique(ESData[geo == "HU" & !is.na(values)]$time)]
-ESData <- ESData[freq == "A" & unit == "MIO_NAC" & sector == "S13" & na_item == "TE" & cofog99 != "TOTAL" & geo %in% countries$EU27 & !is.na(values),
+ESData <- ESData[freq == "A" & unit == "MIO_NAC" & sector == "S13" & na_item == "TE" & cofog99 != "TOTAL" & geo %in% countries$EU27,
                  .(cofog = cofog99, year = year(time), type = "actual_cofog", value = values, geo)]
 
 ESData[, level := ifelse(nchar(cofog) == 4, "main_group", "subgroup")]
+ESData[, cofogParent := substring(cofog, 1, 4)]
+
+ESData <- merge(ESData,
+                merge(ESData[level == "subgroup", .(sum(value, na.rm = TRUE)), .(year, geo, cofogParent)],
+                      ESData[level == "main_group"], by = c("year", "geo", "cofogParent"))[
+                        abs(value - V1) < 0.4, .(year, geo, cofogParent, ok = TRUE)],
+                by = c("year", "geo", "cofogParent"), all.x = TRUE)
+ESData[ok == TRUE & is.na(value), value := 0]
+ESData[, ok := NULL]
+ESData[, cofogParent := NULL]
+ESData <- ESData[!is.na(value)]
+
 ESData <- merge(ESData, BridgeData, by = "cofog", sort = FALSE, all.x = TRUE)
 
 ESData <- rbind(ESData, aggregate_rows(ESData, from = "cofog"))
 
 ESData <- merge(ESData, ESData[!is.na(cofog) & level == "main_group", .(total = sum(value)), .(geo, year, type)],
                 by = c("geo", "year", "type"), sort = FALSE)
+
 ESData[, cofogParent := substring(cofog, 1, 4)]
 ESData[, huncodeParent := substring(huncode, 1, 3)]
 
@@ -171,8 +184,8 @@ RawData[, valuedeflP3S13 := (value / 1000) * deflatorP3S13]
 RawData[, valueinfl := (value / 1000) * inflation]
 
 RawData[, value := value / 1000]
-RawData[, yearchr := as.character(year)]
 RawData <- RawData[order(year)]
+RawData[, yearchr := as.character(year)]
 
 ################################################################
 

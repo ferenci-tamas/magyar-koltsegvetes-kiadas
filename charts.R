@@ -1,9 +1,9 @@
 # The functions that draw the charts of kiadas.qmd (category_chart(),
 # plan_actual_chart(), plan_actual_heatmap(), country_lines_chart(),
-# country_heatmap() and country_chart()), and their helpers. They use data.table,
-# echarts4r, RawData, HURawData and CategoryPaths, so kiadas.qmd sources this after
-# attaching the packages and defining the data (plan_actual_labels below reads
-# HURawData as soon as this is sourced)
+# country_heatmap(), country_chart() and country_stack_chart()), and their
+# helpers. They use data.table, echarts4r, RawData, HURawData and CategoryPaths, so
+# kiadas.qmd sources this after attaching the packages and defining the data
+# (plan_actual_labels below reads HURawData as soon as this is sourced)
 
 # The page's own JavaScript, the `kiadas` object that the charts and their filters
 # use (see its parts where they're used), inlined into the head of the page once,
@@ -694,7 +694,13 @@ add_download_menu <- function(chart, unit, id, choice_id = NULL,
                                  }
                                  }
                                  var extra = Math.round(legendHeight(copy) - legendHeight(chart));
-                                 copy.setOption({ grid: { bottom: option.grid[0].bottom + extra } });
+                                 // The outer bounds of the plot, which keep the labels of the axes above the
+                                 // legend (see add_chart_layout()), move up with it
+                                 var outer = option.grid[0].outerBounds || {};
+                                 copy.setOption({ grid: {
+                                 bottom: option.grid[0].bottom + extra,
+                                 outerBounds: { bottom: (outer.bottom || 0) + extra }
+                                 } });
                                  copy.resize({ width: width, height: height + extra });
                                  return copy;
                                  }
@@ -1835,8 +1841,9 @@ add_part_lines <- function(chart, paths, group, stack = FALSE, unit = "") {
   chart
 }
 
-# The colours of the parts in a chart of parts (see add_part_legend()) and of the
-# lines of a country_lines_chart(): ECharts' default palette has 9 colours, so this
+# The colours of the parts in a chart of parts (see add_part_legend()) or in a
+# country_stack_chart(), and of the lines of a country_lines_chart(): ECharts'
+# default palette has 9 colours, so this
 # adds 7 for the 16 Hungarian main groups, each picked (among colours of moderate
 # lightness and chroma) to differ as much as possible from all the colours before it,
 # by CIEDE2000
@@ -1996,7 +2003,9 @@ add_base_year_slider <- function(chart, ids, var, base_year = NULL) {
 # ends with the year chosen with the slider `ids$base` (kept in its data-year
 # attribute), after `year_label`: in relative mode by default, the base year, after
 # "bázisév: ". Without a crosstalk group (`ids$group` NULL, as in a country_chart()),
-# the chart doesn't follow the filters
+# the chart doesn't follow the filters. A chart with several legends (as a
+# country_stack_chart(), with one of the parts and one of the countries) has them
+# one above the other at the bottom, the first one at the top
 add_chart_layout <- function(chart, title, ids, paths = NULL, relative = FALSE,
                              row_height = NULL, min_plot_height = 0, second = TRUE,
                              watch_ids = NULL, year_label = if (relative) "bázisév: ") {
@@ -2025,7 +2034,9 @@ add_chart_layout <- function(chart, title, ids, paths = NULL, relative = FALSE,
   # when the chart is too narrow for one (as on phones, or showing parts, when it
   # has many items), but only leaves room for one, so the others would cover the
   # horizontal axis. If a name is too long for a line of the legend (as on
-  # phones), the names are cut short with an ellipsis, and shown whole on hover
+  # phones), the names are cut short with an ellipsis, and shown whole on hover.
+  # With several legends, each is laid out so, and room is left for all of them
+  # (see legendLayout() below)
   chart |>
     htmlwidgets::onRender("
       function(el, x, data) {
@@ -2039,9 +2050,15 @@ add_chart_layout <- function(chart, title, ids, paths = NULL, relative = FALSE,
         var base = data.baseId && document.getElementById(data.baseId);
         var download = document.getElementById(data.downloadId);
         // The height of the chart, and the room above and below the plot without
-        // the title and with a legend of one line
+        // the title and with a legend of one line, and how far from the bottom of
+        // the chart ECharts keeps the labels of the axes (see update())
         var option = chart.getOption(), height = el.clientHeight;
         var gridTop = option.grid[0].top, gridBottom = option.grid[0].bottom;
+        var outerBottom = (option.grid[0].outerBounds || {}).bottom || 0;
+        // Where each legend is at first: how far its bottom is from that of the chart
+        var legendBottoms = (option.legend || []).map(function(legend) {
+          return legend.bottom;
+        });
         var context = document.createElement('canvas').getContext('2d');
 
         // ECharts could wrap the title too, but wouldn't tell into how many
@@ -2058,14 +2075,52 @@ add_chart_layout <- function(chart, title, ids, paths = NULL, relative = FALSE,
           }, []);
         }
 
-        // How much higher the legend is than its first line (its items are all of
-        // the same height)
-        function legendExtra() {
-          var model = chart.getModel().getComponent('legend');
-          var view = model && chart.getViewOfComponentModel(model);
-          var items = view && view.getContentGroup(), first = items && items.childAt(0);
-          return first ?
-            Math.round(items.getBoundingRect().height - first.getBoundingRect().height) : 0;
+        // The items of the legend `model`
+        function itemsOf(model) {
+          var view = chart.getViewOfComponentModel(model);
+          return view && view.getContentGroup();
+        }
+
+        // The legends with items, in their order (a hidden legend has none, as has a
+        // legend with nothing to list)
+        function legends() {
+          var shown = [];
+          chart.getModel().eachComponent('legend', function(model) {
+            var items = itemsOf(model);
+            if (items && items.childCount()) shown.push(model);
+          });
+          return shown;
+        }
+
+        // The padding of the legend `model`, which is given as in CSS
+        function paddingOf(model) {
+          var padding = [].concat(model.get('padding'));
+          var top = padding[0], right = padding.length > 1 ? padding[1] : top;
+          return { top: top, right: right, bottom: padding.length > 2 ? padding[2] : top,
+                   left: padding.length > 3 ? padding[3] : right };
+        }
+
+        // How much higher the legends are than a legend of one line, which the room
+        // below the plot is for (`room`), and, if there are several, where each of
+        // them goes: how far its bottom is from that of the chart (`bottoms`, by the
+        // index of the legend). ECharts puts each at the bottom, so the last stays
+        // where it is at first, and each other one goes right above the next one,
+        // 6px from it. (The items of a legend are all of the same height)
+        function legendLayout() {
+          var shown = legends(), bottoms = {}, top = null;
+          if (!shown.length) return { room: 0, bottoms: bottoms };
+          for (var i = shown.length - 1; i >= 0; i--) {
+            var model = shown[i], padding = paddingOf(model);
+            var bottom = top === null ? legendBottoms[model.componentIndex] : top + 6;
+            bottoms[model.componentIndex] = bottom;
+            top = bottom + padding.bottom + itemsOf(model).getBoundingRect().height +
+              padding.top;
+          }
+          // The top of the first legend's items, and where they'd end in one line
+          var first = shown[0], padding = paddingOf(first);
+          var oneLine = legendBottoms[first.componentIndex] + padding.bottom +
+            itemsOf(first).childAt(0).getBoundingRect().height;
+          return { room: Math.round(top - padding.top - oneLine), bottoms: bottoms };
         }
 
         // In a heatmap, how much taller its rows are, data.rowHeight px each on
@@ -2080,35 +2135,45 @@ add_chart_layout <- function(chart, title, ids, paths = NULL, relative = FALSE,
             (height - gridTop - gridBottom);
         }
 
-        // Cuts the names in the legend short if one is too long for a line (see
-        // above). Only redone when the names or the width of the chart change
-        var fitted = null, cut = false;
+        // Sets the options `options` of the legend with the index `index` (leaving the
+        // others as they are)
+        function setLegend(index, options) {
+          var legend = [];
+          for (var i = 0; i < index; i++) legend.push({});
+          legend.push(options);
+          chart.setOption({ legend: legend });
+        }
+
+        // Cuts the names in each legend short if one of them is too long for a line
+        // (see above). Only redone when the names or the width of the chart change
+        var fitted = null, cut = {};
         function fitLegend() {
-          var model = chart.getModel().getComponent('legend');
-          if (!model) return;
-          var key = JSON.stringify([chart.getWidth(), model.get('data')]);
+          var shown = legends();
+          var key = JSON.stringify([chart.getWidth(), shown.map(function(model) {
+            return model.get('data');
+          })]);
           if (key === fitted) return;
           fitted = key;
-          // Whole names first, to see if they fit
-          if (cut) {
-            chart.setOption({ legend: {
-              textStyle: { width: null, overflow: 'none' }, tooltip: { show: false }
-            } });
-            cut = false;
-          }
-          // The padding of the legend is given as in CSS
-          var padding = [].concat(model.get('padding'));
-          var right = padding.length > 1 ? padding[1] : padding[0];
-          var room = chart.getWidth() - right - (padding.length > 3 ? padding[3] : right);
-          var items = chart.getViewOfComponentModel(model).getContentGroup();
-          if (items.getBoundingRect().width > room) {
-            chart.setOption({ legend: {
-              // Beside the icon and the 5px gap after it
-              textStyle: { width: room - model.get('itemWidth') - 5, overflow: 'truncate' },
-              tooltip: { show: true }
-            } });
-            cut = true;
-          }
+          shown.forEach(function(model) {
+            var index = model.componentIndex;
+            // Whole names first, to see if they fit
+            if (cut[index]) {
+              setLegend(index, {
+                textStyle: { width: null, overflow: 'none' }, tooltip: { show: false }
+              });
+              cut[index] = false;
+            }
+            var padding = paddingOf(model);
+            var room = chart.getWidth() - padding.right - padding.left;
+            if (itemsOf(model).getBoundingRect().width > room) {
+              setLegend(index, {
+                // Beside the icon and the 5px gap after it
+                textStyle: { width: room - model.get('itemWidth') - 5, overflow: 'truncate' },
+                tooltip: { show: true }
+              });
+              cut[index] = true;
+            }
+          });
         }
 
         function update() {
@@ -2118,9 +2183,20 @@ add_chart_layout <- function(chart, title, ids, paths = NULL, relative = FALSE,
             chart.resize({ width: el.clientWidth, height: el.clientHeight });
           }
           fitLegend();
-          var legendRoom = legendExtra(), titleRoom = 0;
+          var layout = legendLayout(), legendRoom = layout.room, titleRoom = 0;
           var rowsRoom = data.rowHeight ? rowsExtra() : 0;
-          var options = { grid: { bottom: gridBottom + legendRoom } };
+          // The plot is moved up by the room for the legends, and so are its outer
+          // bounds, within which ECharts keeps the labels of the axes by shrinking
+          // the plot, so that labels that reach below the room for them (as the
+          // vertical names of the countries of a country_stack_chart()) stay clear
+          // of the legends
+          var options = { grid: { bottom: gridBottom + legendRoom,
+                                  outerBounds: { bottom: outerBottom + legendRoom } } };
+          if (Object.keys(layout.bottoms).length > 1) {
+            options.legend = legendBottoms.map(function(_, i) {
+              return i in layout.bottoms ? { bottom: layout.bottoms[i] } : {};
+            });
+          }
           // For the choices of the two filters, or of the main group dropdown alone
           // (empty if the title then has no end)
           var end = data.title && (second ?
@@ -2164,7 +2240,7 @@ add_chart_layout <- function(chart, title, ids, paths = NULL, relative = FALSE,
             // ECharts then lays out the legend anew, for the new height (a vertical
             // legend wraps into more columns when the chart is short), so if that
             // changed its height, the chart is laid out once more (but not endlessly)
-            if (legendExtra() !== legendRoom && passes < 2) {
+            if (legendLayout().room !== legendRoom && passes < 2) {
               passes++;
               update();
             }
@@ -3052,9 +3128,12 @@ country_values_element <- function(id, values) {
 # subgroup is chosen (see below); and unless `years` is NULL (as in a
 # country_lines_chart() or a country_heatmap()), the slider of the year, at first at
 # `year` among `years`, which the chart takes over once it's drawn (see
-# add_country_bars())
+# add_country_bars()). With `parts = TRUE`, as in a country_stack_chart(), there's
+# no subgroup dropdown: the main group dropdown offers "Összesen" first, for the
+# whole made up of the main groups, and the radio buttons only offer the columns
+# relative to the main group while a main group is chosen
 country_filters <- function(ids, categories, category, var, var_label, years = NULL,
-                            year = NULL) {
+                            year = NULL, parts = FALSE) {
   # The choices of the subgroup dropdown, for each main group (by label)
   groups <- split(categories, by = "main")
   subgroups <- setNames(
@@ -3075,12 +3154,15 @@ country_filters <- function(ids, categories, category, var, var_label, years = N
                             "Főcsoport:"),
       htmltools::tags$select(
         id = ids$main, class = "form-select form-select-sm",
-        lapply(names(subgroups), \(label) htmltools::tags$option(
-          value = label, selected = if (label == category) NA, label
-        ))
+        # With `parts`, only the main groups made up of subgroups
+        lapply(if (parts) c("Összesen", names(subgroups)[lengths(subgroups) > 1]) else
+                 names(subgroups), \(label) {
+          htmltools::tags$option(value = label, selected = if (label == category) NA,
+                                 label)
+        })
       )
     ),
-    htmltools::div(
+    if (!parts) htmltools::div(
       style = "flex: 1 1 20rem",
       htmltools::tags$label(class = "form-label small mb-1", `for` = ids$sub,
                             "Csoport:"),
@@ -3117,12 +3199,15 @@ country_filters <- function(ids, categories, category, var, var_label, years = N
     # while the subgroup dropdown is at "Összesen", they don't offer the columns
     # relative to the main group, and if one of those is chosen, the first column
     # offered is checked (and plotted) instead, until a subgroup is chosen again.
-    # The buttons are hidden while they offer only one column. After the controls,
-    # which it uses
+    # The buttons are hidden while they offer only one column. With `parts`, the
+    # buttons follow the main group dropdown in the same way, at once, as the page
+    # is read. After the controls, which it uses
     htmltools::tags$script(htmltools::HTML(sprintf(
       "(function() {
         var subgroups = %s, parentColumns = %s;
-        var main = document.getElementById(%s), sub = document.getElementById(%s);
+        var main = document.getElementById(%s), sub = %s && document.getElementById(%s);
+        // The dropdown that the buttons follow, the last one
+        var last = sub || main;
         var choice = document.getElementById(%s);
         var inputs = choice ? Array.from(choice.querySelectorAll('input')) : [];
         // The column chosen with the buttons, kept while it isn't offered
@@ -3136,7 +3221,7 @@ country_filters <- function(ids, categories, category, var, var_label, years = N
         }
 
         function offer() {
-          var whole = !sub.value || sub.value === 'Összesen';
+          var whole = !last.value || last.value === 'Összesen';
           var offered = inputs.filter(function(input) {
             var shown = !whole || parentColumns.indexOf(input.value) < 0;
             input.hidden = input.labels[0].hidden = !shown;
@@ -3148,18 +3233,24 @@ country_filters <- function(ids, categories, category, var, var_label, years = N
           choice.parentElement.hidden = offered.length < 2;
         }
 
-        main.addEventListener('change', update);
         if (choice) {
           choice.addEventListener('change', function() {
             chosen = choice.querySelector('input:checked').value;
           });
-          sub.addEventListener('change', offer);
+          last.addEventListener('change', offer);
         }
-        update();
+        if (sub) {
+          main.addEventListener('change', update);
+          update();
+        } else if (choice) {
+          offer();
+        }
       })();",
       jsonlite::toJSON(subgroups),
       jsonlite::toJSON(parent_var),
       jsonlite::toJSON(ids$main, auto_unbox = TRUE),
+      # No subgroup dropdown with `parts`
+      jsonlite::toJSON(!parts, auto_unbox = TRUE),
       jsonlite::toJSON(ids$sub, auto_unbox = TRUE),
       # No element has this id if there's only one column
       jsonlite::toJSON(ids$var, auto_unbox = TRUE)
@@ -3275,20 +3366,24 @@ add_country_bars <- function(chart, ids, data, columns, axis_name, year, highlig
 # which takes it beyond 100 when large negative values widen its range (as to 120,
 # with a step of 30), and then it ends at 100 instead. A value above 100 (a part
 # larger than its whole, as when the other parts are negative) is left to ECharts,
-# so that it's shown in full
-percent_axis_max <- function(unit) {
+# so that it's shown in full. With `stacked = TRUE`, as in a country_stack_chart(),
+# the values are the tops of stacked parts, which add up to a whole of 100% a hair
+# above 100 from rounding errors, or as much above it as negative parts too small to
+# see go below 0, so an overshoot of less than 0.5% of the axis is cut off, as in
+# add_part_lines()
+percent_axis_max <- function(unit, stacked = FALSE) {
   if (unit != "%") return(NULL)
-  htmlwidgets::JS("
+  htmlwidgets::JS(sprintf("
     function(value) {
-      if (value.max > 100) return null;
       // ECharts' own end, for the values shown: a value axis includes 0, and its
       // step is a fifth of its range, rounded by ECharts' nice() to 1, 2, 3 or 5
       // times a power of 10
       var lo = Math.min(value.min, 0), hi = Math.max(value.max, 0);
+      if (value.max > 100) return %s;
       var step = echarts.number.nice((hi - lo) / 5, true);
       return Math.ceil(Number((hi / step).toPrecision(12))) * step > 100 ? 100 : null;
     }
-  ")
+  ", if (stacked) "value.max - 100 < 0.005 * (hi - lo) ? 100 : null" else "null"))
 }
 
 # The filters and the line chart of how much each country spent on a category of
@@ -3788,5 +3883,362 @@ add_country_heatmap <- function(chart, ids, data, rows, columns, axis_name, size
     scale = list(height = sizes$scale,
                  stops = Map(\(offset, color) list(offset = offset, color = color),
                              seq(0, 1, length.out = length(colors)), colors))
+  ))
+}
+
+# The filters and the stacked column chart of what each country's spending was made
+# up of in a year, by Eurostat's accrual-based data (type "actual_cofog") in RawData,
+# in the column `var`: a column for each country (or group of countries: see
+# group_names) switched on in the legend of the countries, with the parts of the
+# whole chosen with a dropdown stacked in it (see add_country_stacks()): the main
+# groups of COFOG for "Összesen" (at first), else the subgroups of the chosen main
+# group. The year is chosen with a slider, as in country_chart() (at first the last
+# year with data for the most of the countries shown at first). If `var` has several
+# columns, the chart plots the one chosen with radio buttons labelled `var_label`,
+# which offer them by their names (the first one at first), and `axis_name` may give
+# a different name for each (on the y axis); the columns relative to the main group
+# (named ...Parent, like propParent) only while a main group is chosen. So a column
+# adds up to 100% in the column relative to the whole whose parts it shows (prop for
+# "Összesen", propParent for a main group), but only to the whole's share in the
+# others (as of the GDP). `unit` (unless it's "") follows the values in the tooltip,
+# and with `unit = "%"`, the y axis ends at 100 at most, unless the columns reach
+# above it (see percent_axis_max()). Below the chart are two legends: that of the
+# parts, and that of all the countries, which switches them on and off, at first
+# only `shown` (by their codes), as in a country_lines_chart(): `shown` come first,
+# in their order, and the others after them, in alphabetical order, and the columns
+# follow the same order. The name of the country `highlight` (by its code; none if
+# NULL) is in bold, in the legend and below its column, as in a country_chart(). The
+# chart has no title if `title` is NULL, else `title` followed by the name of the
+# main group (unless it's "Összesen") and the year. As in category_chart(), each call
+# has its own element ids (made from `id`), and the chart is only drawn once it comes
+# near the viewport, then starting from the current choices of its controls. The
+# helpers of country_chart() and of category_chart() make its parts
+country_stack_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
+                                highlight = "HU",
+                                shown = c(highlight, "EU27", "EU15", "EU11", "V4"),
+                                id = paste0(var[[1]], "_country_stack")) {
+  # Named as in country_chart(), which also has a slider, but there's no subgroup
+  # dropdown
+  ids <- list(main = paste0(id, "_main_group"), var = paste0(id, "_var_choice"),
+              base = paste0(id, "_year"), download = paste0(id, "_download"),
+              chart = paste0(id, "_chart"))
+  columns <- unname(var)
+  axis_name <- rep_len(axis_name, length(var))
+  data <- country_data(columns)
+  # As in country_chart()
+  unit_suffix <- unit_suffix_for(unit)
+  fraction_digits <- 1L
+  geo_names <- c(country_names, group_names)
+  # Before `highlight` is changed, as the default of `shown` reads it
+  absent <- setdiff(shown, names(geo_names))
+  if (length(absent) > 0) stop("No name for the countries ", toString(absent))
+  shown <- intersect(geo_names[shown], data$countries)
+  highlight <- if (!is.null(highlight)) country_names[[highlight]]
+  others <- setdiff(data$countries, shown)
+  # The names of the countries in the order of the legend and of the columns, the
+  # others sorted as in country_lines_chart()
+  countries <- c(shown, stringi::stri_sort(others, locale = "hu"))
+  # The parts of each whole that the dropdown offers (by their labels), in the order
+  # of their codes: "Összesen" first, made up of the main groups, then each main
+  # group with subgroups, made up of them
+  categories <- data$categories
+  mains <- categories[code == main]
+  parts <- c(
+    list("Összesen" = mains$label),
+    setNames(lapply(mains$code, \(m) categories[main == m & code != m, label]),
+             mains$label)
+  )
+  parts <- parts[lengths(parts) > 0]
+
+  # At first the last year with data for the most of the countries shown at first,
+  # for the main groups, in the first column, as the latest years may only have
+  # data for a few (as in country_chart()). The slider offers the years with data
+  # for any of them
+  positions <- match(shown, data$countries)
+  by_part <- lapply(data$values[parts[["Összesen"]]], `[[`, columns[[1]])
+  years <- sort(unique(unlist(lapply(by_part, names))))
+  counts <- vapply(years, \(year) {
+    has_value <- lapply(by_part, \(by_year) {
+      values <- by_year[[year]]
+      if (is.null(values)) rep(FALSE, length(positions)) else !is.na(values[positions])
+    })
+    sum(Reduce(`|`, has_value))
+  }, 0L)
+  year <- max(years[counts == max(counts)])
+  years <- years[counts > 0]
+
+  # A stacked series for each category (in the order of the codes, so the parts
+  # are stacked in that order, from the bottom up), which add_country_stacks() fills
+  # in for the parts shown, and one without data for each country, which give the
+  # legend of the countries its names (as in add_plan_actual_colors()), in a grey
+  # that tells only whether they're switched on, as the columns aren't coloured by
+  # country. (Without the categories of the x axis, which add_country_stacks() adds
+  # at once, as an empty list of them here would make echarts4r's e_x_axis() warn.)
+  # Hovering a part, or its name in the legend, highlights it in every column
+  chart <- e_chart(elementId = ids$chart)
+  chart$x$opts$xAxis <- list(list(type = "category"))
+  chart$x$opts$series <- c(
+    lapply(categories$label, \(label) list(
+      name = label, type = "bar", stack = "total", data = list(),
+      emphasis = list(focus = "series")
+    )),
+    lapply(countries, \(name) list(name = name, type = "line", data = list(),
+                                   color = "#6d6e73"))
+  )
+  # The legend of the parts, which add_country_stacks() lists, and that of the
+  # countries, with a small circle for each, and the name of `highlight` in bold
+  chart$x$opts$legend <- list(
+    list(data = list()),
+    list(
+      data = lapply(countries, \(name) c(
+        list(name = name),
+        if (identical(name, highlight)) list(textStyle = list(fontWeight = "bold"))
+      )),
+      selected = as.list(setNames(rep(FALSE, length(others)), others)),
+      icon = "circle", itemWidth = 10, itemHeight = 10
+    )
+  )
+  chart <- chart |>
+    # Formatted by add_country_stacks()
+    e_tooltip(trigger = "item", confine = TRUE, extraCssText = "white-space: normal;") |>
+    e_y_axis(name = axis_name[[1]], max = percent_axis_max(unit, stacked = TRUE),
+             # As in add_part_lines(), negative parts too small to see don't run the
+             # axis down to -20
+             min = if (unit == "%") htmlwidgets::JS("
+               function(value) {
+                 return value.min < 0 && -value.min < 0.005 * (value.max - value.min) ?
+                   0 : null;
+               }
+             "),
+             axisLabel = list(
+               # As in add_category_lines()
+               formatter = htmlwidgets::JS("
+                function(value) {
+                  return value.toLocaleString('hu-HU', { maximumFractionDigits: 20 });
+                }
+              ")
+             )) |>
+    add_chart_frame(x_name = "Ország") |>
+    # ECharts shrinks the plot so that the labels of the x axis (see below) end
+    # within these bounds, which leave room for a legend of one line and the credit
+    # below them (add_chart_layout() moves them up by the room for the legends)
+    e_grid(outerBounds = list(left = 0, right = 0, top = 0, bottom = 45))
+  # Every country is labelled, the highlighted one in bold, as in a country_chart()
+  # (vertically if the names don't fit: see add_country_stacks())
+  chart$x$opts$xAxis[[1]]$axisLabel <- modifyList(
+    chart$x$opts$xAxis[[1]]$axisLabel,
+    list(interval = 0, rich = list(highlight = list(fontWeight = "bold")),
+         formatter = htmlwidgets::JS(sprintf(
+           "function(value) { return value === %s ? '{highlight|' + value + '}' : value; }",
+           jsonlite::toJSON(highlight, auto_unbox = TRUE, null = "null")
+         )))
+  )
+  chart <- chart |>
+    add_country_stacks(ids, data, parts, columns, axis_name, countries, year,
+                       unit_suffix, fraction_digits) |>
+    add_chart_description("Halmozott oszlopdiagram", unit_suffix, fraction_digits) |>
+    # The title names the chosen main group, as that of a plan_actual_chart(), and
+    # the year. (CategoryPaths, which the names are taken from, has the same COFOG
+    # categories, as in a country_chart())
+    add_chart_layout(title, ids, data.table(main = names(parts)), second = FALSE,
+                     year_label = "")
+
+  htmltools::attachDependencies(
+    htmltools::tagList(
+      # Unless the page already has them (see country_values_element())
+      country_values_element(data$values_id, data$values),
+      country_filters(ids, categories, "Összesen", var, var_label, years, year,
+                      parts = TRUE),
+      # The data files start with the name of the y axis, as the headers of the
+      # values only name the parts, not what they're relative to
+      add_download_menu(chart, unit, id = ids$download,
+                        choice_id = if (length(var) > 1) ids$var,
+                        download_axis_name = TRUE),
+      defer_chart(ids$chart)
+    ),
+    kiadas_dependency
+  )
+}
+
+# The columns of a country_stack_chart() (see there), with the ids `ids` (see there),
+# from `data` (see country_data()): a column for each of the countries named
+# `countries` (in their order) that is switched on in the legend of the countries
+# and has a value for a part in the year chosen with the slider, made up of the
+# parts of the whole chosen with the dropdown (by its choices, their labels in
+# `parts`), stacked from the bottom up in their order, in the column chosen with the
+# radio buttons (or in the only one of `columns`). The y axis is named after the
+# column, in `axis_name`. The parts are coloured in the order of the stack, as in
+# add_part_legend(), which also lists them in the legend so, from the top of the
+# stack down. The slider offers the years with a value for a part in the column for
+# a country switched on (or, if none is, for any country), and when the choices
+# change, it keeps its year, or moves to the nearest one offered, as in
+# add_country_bars() (which also tells how the year is shown, and kept for the
+# title), starting from `year`. The names of the countries are written below their
+# columns horizontally if the widest fits in a column, else vertically. The tooltip
+# shows the hovered part of a column, as that of the stacked areas of a
+# category_chart(): the country and the year, then the part, and its value followed
+# by `unit_suffix`, with at most `fraction_digits` decimals (or two significant
+# digits if that's more precise)
+add_country_stacks <- function(chart, ids, data, parts, columns, axis_name, countries,
+                               year, unit_suffix, fraction_digits) {
+  htmlwidgets::onRender(chart, "
+    function(el, x, data) {
+      var chart = echarts.getInstanceByDom(el);
+      var main = document.getElementById(data.mainId);
+      var choice = data.columnId && document.getElementById(data.columnId);
+      var slider = document.getElementById(data.yearId);
+      var output = document.getElementById(data.yearId + '_value');
+      var option = chart.getOption();
+      // The chosen year, the years offered, the names of the countries with a
+      // column, and whether each country is switched on in the legend (by name)
+      var year = data.year, offered = [], drawn = [], on = {};
+      var selected = option.legend[1].selected || {};
+      data.countries.forEach(function(name) { on[name] = selected[name] !== false; });
+
+      // The labels of the parts of the chosen whole, from the bottom of the stack up
+      function parts() { return data.parts[main.value] || []; }
+      function column() {
+        return choice ? choice.querySelector('input:checked').value : data.columns[0];
+      }
+      // The values of each of the parts in the chosen column, by year
+      function values() {
+        var all = kiadas.countryValues(data.valuesId);
+        return parts().map(function(label) { return all[label][column()]; });
+      }
+
+      // 90 (vertical) if the widest of the names `names` (in bold, as that of the
+      // highlighted country is) wouldn't fit in a column with 8px to spare, else 0.
+      // The plot takes up 75% of the width of the chart, between the default
+      // margins of the grid (15% on the left, 10% on the right)
+      var context = document.createElement('canvas').getContext('2d');
+      context.font = 'bold 12px ' + option.textStyle.fontFamily;
+      function rotation(names) {
+        var widest = Math.max.apply(null, names.map(function(name) {
+          return context.measureText(name).width;
+        }).concat(0));
+        return widest + 8 > 0.75 * el.clientWidth / names.length ? 90 : 0;
+      }
+
+      // Draws the columns of the chosen year (see above)
+      function draw() {
+        var labels = parts(), byPart = values(), at = {}, shown = [];
+        labels.forEach(function(label, k) { at[label] = k; });
+        data.countries.forEach(function(name, j) {
+          var i = data.positions[j];
+          var has = byPart.some(function(byYear) {
+            return byYear[year] && byYear[year][i] != null;
+          });
+          if (on[name] && has) shown.push({ name: name, position: i });
+        });
+        drawn = shown.map(function(country) { return country.name; });
+        chart.setOption({
+          xAxis: { data: drawn, axisLabel: { rotate: rotation(drawn) } },
+          yAxis: { name: data.axisNames[column()] },
+          legend: [{ data: labels.slice().reverse() }],
+          // Those of the parts (the series of the countries come after them)
+          series: data.labels.map(function(label) {
+            var k = at[label];
+            if (k === undefined) return { data: [] };
+            var byYear = byPart[k][year] || [];
+            return {
+              color: data.palette[k % data.palette.length],
+              data: shown.map(function(country) {
+                var value = byYear[country.position];
+                return { name: country.name,
+                         value: [country.name, value == null ? null : value] };
+              })
+            };
+          })
+        });
+      }
+
+      slider.addEventListener('input', function() {
+        year = offered[slider.value];
+        output.textContent = year;
+        slider.setAttribute('aria-valuetext', year);
+        slider.dataset.year = year;
+        draw();
+      });
+
+      // Offers the years with a value for a part of the chosen whole in the chosen
+      // column for a country switched on (or, if none is, for any country), at the
+      // chosen year or, if it isn't among them, at the nearest one. (As the keys of
+      // an object, the years come in ascending order)
+      function offer() {
+        var byPart = values();
+        function covered(positions) {
+          var has = {};
+          byPart.forEach(function(byYear) {
+            Object.keys(byYear).forEach(function(y) {
+              if (positions.some(function(i) { return byYear[y][i] != null; })) {
+                has[y] = true;
+              }
+            });
+          });
+          return Object.keys(has);
+        }
+        offered = covered(data.positions.filter(function(_, j) {
+          return on[data.countries[j]];
+        }));
+        if (!offered.length) offered = covered(data.positions);
+        var at = 0;
+        offered.forEach(function(y, i) {
+          if (Math.abs(y - year) < Math.abs(offered[at] - year)) at = i;
+        });
+        slider.max = offered.length - 1;
+        slider.value = at;
+        slider.dispatchEvent(new Event('input'));
+      }
+      // The radio buttons follow the dropdown (see country_filters())
+      main.addEventListener('change', offer);
+      if (choice) choice.addEventListener('change', offer);
+      // Whenever a country is switched on or off in the legend, by a click or by an
+      // action of any kind, each of which has an event of its own (the parts' names
+      // switch their parts on and off by themselves)
+      ['legendselectchanged', 'legendselected', 'legendunselected', 'legendselectall',
+       'legendinverseselect'].forEach(function(type) {
+        chart.on(type, function(e) {
+          var changed = false;
+          data.countries.forEach(function(name) {
+            var now = e.selected[name] !== false;
+            if (now !== on[name]) {
+              on[name] = now;
+              changed = true;
+            }
+          });
+          if (changed) offer();
+        });
+      });
+      // The names of the countries fit in a new width differently
+      window.addEventListener('resize', function() {
+        chart.setOption({ xAxis: { axisLabel: { rotate: rotation(drawn) } } });
+      });
+      offer();
+
+      var format = new Intl.NumberFormat('hu-HU', {
+        maximumFractionDigits: data.digits, maximumSignificantDigits: 2,
+        roundingPriority: 'morePrecision'
+      });
+      chart.setOption({
+        tooltip: {
+          formatter: function(p) {
+            if (p.value == null || p.value[1] == null) return '';
+            return p.name + ', ' + year + '<br>' + p.marker + ' ' + p.seriesName +
+              ': <b style=\"white-space: nowrap\">' + format.format(p.value[1]) +
+              data.unit + '</b>';
+          }
+        }
+      });
+    }
+  ", data = list(
+    mainId = ids$main, columnId = if (length(columns) > 1) ids$var, yearId = ids$base,
+    year = year, columns = as.list(columns),
+    axisNames = as.list(setNames(axis_name, columns)),
+    parts = lapply(parts, as.list), labels = as.list(data$categories$label),
+    countries = as.list(countries),
+    # The position of each country among the countries of `data`
+    positions = as.list(match(countries, data$countries) - 1L),
+    valuesId = data$values_id, palette = as.list(chart_palette),
+    unit = unit_suffix, digits = fraction_digits
   ))
 }
