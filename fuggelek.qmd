@@ -31,3 +31,12 @@ A teljes kiadási összeget kézzel számoltam ki a főcsoportok összegeként, 
 Előfordul (igaz, mindössze `r RawData[geo == "HU", sum(value < 0)]` esetben), hogy a nemzetközi kimutatásban szereplő kiadási érték negatív; ez meglepő lehet, de meghatározott eseteket, például ha állam értékesít bizonyos vagyontárgyakat, [tényleg így kell](https://ec.europa.eu/eurostat/statistics-explained/SEPDF/cache/42730.pdf?v=1512967044416454) rögzíteni. Ilyenkor az összetételi diagramon egy negatív csúcs is lesz, felfelé viszont 100% felé fog menni a görbe (hogy a kettőből kijöjjön a 100%-os összeg).
 
 A "közösségi fogyasztás" (aminek az implicit árindexe szerepe a reálértékes vizsgálatnál) az Eurostat szerinti P3_S13 kategóriát jelenti.
+
+A nemzetközi összehasonlításnál az országcsoportok adatai a csoportba tartozó országoknak nem egyszerű, hanem súlyozott átlagai, ahol a súlyok az egyes országok adott évi, euróra átszámolt folyóáras bruttó hazai termékei. (Ez egyezik az Eurostat [módszertanával](https://ec.europa.eu/eurostat/cache/metadata/en/gov_10a_exp_esms.htm), de én mindenhol kézzel számoltam ki az átlagot, egyrészt, mert a legtöbb csoport az Eurostat-nál nem is szerepel -- például visegrádi négyek -- de ami igen, az is esetleges, hogy melyik adatbázisban van feltüntetve mint aggregát adat és melyikben nem.) Előfordul, hogy bizonyos országok bizonyos években nem jelentettek adatot, ilyenkor az átlag a többi, elérhető országból számolódik. Az egyes országcsoportok pontos listája a [következő](https://ec.europa.eu/eurostat/statistics-explained/SEPDF/cache/4904.pdf):
+
+- EU27: BE, BG, CZ, DK, DE, EE, IE, EL, ES, FR, HR, IT, CY, LV, LT, LU, HU, MT, NL, AT, PL, PT, RO, SI, SK, FI, SE
+- V4: CZ, HU, PL, SK
+- EU15: AT, BE, DK, FI, FR, DE, EL, IE, IT, LU, NL, PT, ES, SE
+- EU11: BG, CZ, EE, HR, HU, LT, LV, PL, RO, SI, SK
+
+Ami ebből kiemelendő, hogy az EU15 (sem) tartalmazza az Egyesült Királyságot, tehát ez valójában, nevével ellentétben, csak 14 ország.

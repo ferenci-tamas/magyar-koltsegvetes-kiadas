@@ -19,6 +19,11 @@ book:
         family: Ferenci
         literal: Ferenci Tamás
       url: https://www.medstat.hu/
+  # Ugyanaz kell legyen, mint a fenti cím, ha bármelyik változik, kézzel át kell
+  # írni a másikat
+  sidebar:
+    title: "A költségvetés kiadásai: mire és mennyit költ a magyar állam?<br>[Ferenci Tamás]{.fs-6 .text-body-secondary}"
+    footer: "[medstat.hu](https://www.medstat.hu/)"
   date: today
   date-format: "YYYY. MMMM D."
   sharing: [twitter, facebook, linkedin]

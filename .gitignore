@@ -49,3 +49,4 @@ rsconnect/
 *.Rproj
 /.quarto/
 **/*.quarto_ipynb
+.posit/assistant

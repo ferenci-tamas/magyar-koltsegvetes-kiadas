@@ -5,10 +5,15 @@ source("aggregates.R")
 BridgeData <- fread("BridgeData.csv")
 CofogName <- fread("cofog-kod-nev.csv")
 
-geos <- c("BE", "BG", "CZ", "DK", "DE", "EE", "IE", "EL", "ES", "FR", 
-          "HR", "IT", "CY", "LV", "LT", "LU", "HU", "MT", "NL", "AT", "PL", 
-          "PT", "RO", "SI", "SK", "FI", "SE", "IS", "NO", "CH", "UK", "ME",
-          "MK", "AL", "RS", "TR", "XK", "LI", "BA", "MD", "UA")
+countries <- list(
+  EU27 = c("BE", "BG", "CZ", "DK", "DE", "EE", "IE", "EL", "ES", "FR", 
+           "HR", "IT", "CY", "LV", "LT", "LU", "HU", "MT", "NL", "AT", "PL", 
+           "PT", "RO", "SI", "SK", "FI", "SE"),
+  V4 = c("HU", "SK", "CZ", "PL"),
+  EU15 = c("AT", "BE", "DK", "FI", "FR", "DE", "EL", "IE", "IT", "LU", "NL",
+           "PT", "ES", "SE"),
+  EU11 = c("BG", "CZ", "EE", "HR", "HU", "LT", "LV", "PL", "RO", "SI", "SK")
+)
 
 ################################################################
 
@@ -56,10 +61,11 @@ HunData <- merge(HunData, HunData[!is.na(huncode) & level == "main_group", .(tot
 ################################################################
 
 ESData <- data.table(eurostat::get_eurostat(
-  "gov_10a_exp", filters = list(freq = "A", unit = "MIO_NAC", sector = "S13", na_item = "TE", geo = geos), cache = FALSE)
+  "gov_10a_exp", filters = list(freq = "A", unit = "MIO_NAC", sector = "S13", na_item = "TE", geo = countries$EU27), cache = FALSE)
 )
 saveRDS(ESData, "ESData.rds")
-ESData <- ESData[freq == "A" & unit == "MIO_NAC" & sector == "S13" & na_item == "TE" & cofog99 != "TOTAL" & geo %in% geos & !is.na(values),
+ESData <- ESData[time %in% unique(ESData[geo == "HU" & !is.na(values)]$time)]
+ESData <- ESData[freq == "A" & unit == "MIO_NAC" & sector == "S13" & na_item == "TE" & cofog99 != "TOTAL" & geo %in% countries$EU27 & !is.na(values),
                  .(cofog = cofog99, year = year(time), type = "actual_cofog", value = values, geo)]
 
 ESData[, level := ifelse(nchar(cofog) == 4, "main_group", "subgroup")]
@@ -88,9 +94,9 @@ RawData[, cofogMagyar := NULL]
 
 ################################################################
 
-InflData <- data.table(eurostat::get_eurostat("prc_hicp_aind", filters = list(freq = "A", unit = "RCH_A_AVG", coicop = "CP00", geo = geos), cache = FALSE))
+InflData <- data.table(eurostat::get_eurostat("prc_hicp_aind", filters = list(freq = "A", unit = "RCH_A_AVG", coicop = "CP00", geo = countries$EU27), cache = FALSE))
 saveRDS(InflData, "InflData.rds")
-InflData <- InflData[freq == "A" & unit == "RCH_A_AVG" & coicop == "CP00" & geo %in% geos & !is.na(values),
+InflData <- InflData[freq == "A" & unit == "RCH_A_AVG" & coicop == "CP00" & geo %in% countries$EU27 & !is.na(values),
                      .(geo, year = year(time), inflation = 1 + values / 100)]
 stopifnot(nrow(InflData[, .(unique(diff(year))), .(geo)][V1 != 1]) == 0)
 InflData <- rbind(InflData[, .(year = min(year) - 1, inflation = 1), .(geo)], InflData)
@@ -100,10 +106,10 @@ InflData <- InflData[order(geo, year)]
 InflData[, inflation := cumprod(inflation), .(geo)]
 InflData[, inflation := inflation[match(2025, year)] / inflation, .(geo)]
 
-NAMA10Data <- data.table(eurostat::get_eurostat("nama_10_gdp", filters = list(freq = "A", na_item = c("B1GQ", "P3_S13"), geo = geos), cache = FALSE))
+NAMA10Data <- data.table(eurostat::get_eurostat("nama_10_gdp", filters = list(freq = "A", na_item = c("B1GQ", "P3_S13"), geo = countries$EU27), cache = FALSE))
 saveRDS(NAMA10Data, "NAMA10Data.rds")
 
-DeflatorData <- dcast(NAMA10Data[freq == "A" & unit == "PD_PCH_PRE_NAC" & na_item %in% c("B1GQ", "P3_S13") & geo %in% geos & !is.na(values)], freq + unit + geo + time ~ na_item, value.var = "values")
+DeflatorData <- dcast(NAMA10Data[freq == "A" & unit == "PD_PCH_PRE_NAC" & na_item %in% c("B1GQ", "P3_S13") & geo %in% countries$EU27 & !is.na(values)], freq + unit + geo + time ~ na_item, value.var = "values")
 DeflatorData <- DeflatorData[, .(geo, year = year(time), deflatorGDP = 1 + B1GQ / 100, deflatorP3S13 = 1 + P3_S13/100)]
 stopifnot(nrow(DeflatorData[, .(unique(diff(year))), .(geo)][V1 != 1]) == 0)
 DeflatorData <- rbind(DeflatorData[, .(year = min(year) - 1, deflatorGDP = 1, deflatorP3S13 = 1), .(geo)], DeflatorData)
@@ -115,14 +121,18 @@ DeflatorData[, deflatorP3S13 := cumprod(deflatorP3S13), .(geo)]
 DeflatorData[, deflatorGDP := deflatorGDP[match(2025, year)] / deflatorGDP, .(geo)]
 DeflatorData[, deflatorP3S13 := deflatorP3S13[match(2025, year)] / deflatorP3S13, .(geo)]
 
-GDPData <- NAMA10Data[freq == "A" & unit == "CP_MNAC" & na_item == "B1GQ" & geo %in% geos & !is.na(values),
+GDPData <- NAMA10Data[freq == "A" & unit == "CP_MNAC" & na_item == "B1GQ" & geo %in% countries$EU27 & !is.na(values),
                       .(geo, year = year(time), gdp = values)]
 if(nrow(GDPData[geo == "HU" & year == 2026]) == 0) GDPData <- rbind(GDPData, data.table(geo = "HU", year = 2026, gdp = 92303000))
 if(nrow(GDPData[geo == "HU" & year == 2027]) == 0) GDPData <- rbind(GDPData, data.table(geo = "HU", year = 2027, gdp = 97716000))
 
+GDPEURData <- NAMA10Data[freq == "A" & unit == "CP_MEUR" & na_item == "B1GQ" & geo %in% countries$EU27 & !is.na(values),
+                         .(geo, year = year(time), gdpEUR = values)]
+
 RawData <- merge(RawData, InflData, by = c("geo", "year"), sort = FALSE, all.x = TRUE)
 RawData <- merge(RawData, DeflatorData, by = c("geo", "year"), sort = FALSE, all.x = TRUE)
 RawData <- merge(RawData, GDPData, by = c("geo", "year"), sort = FALSE, all.x = TRUE)
+RawData <- merge(RawData, GDPEURData, by = c("geo", "year"), sort = FALSE, all.x = TRUE)
 
 ################################################################
 
@@ -142,13 +152,21 @@ RawData[, nameLabel := factor(nameLabel,
                               levels = unique(RawData[order(huncode, cofog)]$nameLabel))]
 
 RawData[, prop := value / total * 100]
-RawData[, propParent := value / totalParent * 100]
-RawData[, value := value / 1000]
-RawData[, propgdp := value / (gdp / 1000) * 100]
-RawData[, valuedeflGDP := value * deflatorGDP]
-RawData[, valuedeflP3S13 := value * deflatorP3S13]
-RawData[, valueinfl := value * inflation]
+RawData[, propgdp := value / gdp * 100]
 
+RawData <- rbind(RawData, rbindlist(lapply(seq_along(countries), function(i)
+  RawData[type == "actual_cofog" & !is.na(cofog) & geo %in% countries[[i]],
+          .(geo = names(countries)[i], value = NA, total = NA, totalParent = NA, inflation = NA, deflatorGDP = NA,
+            deflatorP3S13 = NA, gdp = NA, gdpEUR = NA, prop = weighted.mean(prop, gdpEUR), propgdp = weighted.mean(propgdp, gdpEUR)),
+          .(type, year, huncode, cofog, huncodeParent, level, cofogParent, name, typeLabel, nameLabel)]
+)))
+
+RawData[, propParent := value / totalParent * 100]
+RawData[, valuedeflGDP := (value / 1000) * deflatorGDP]
+RawData[, valuedeflP3S13 := (value / 1000) * deflatorP3S13]
+RawData[, valueinfl := (value / 1000) * inflation]
+
+RawData[, value := value / 1000]
 RawData[, yearchr := as.character(year)]
 RawData <- RawData[order(year)]
 

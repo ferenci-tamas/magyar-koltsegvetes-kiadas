@@ -8,7 +8,8 @@ library(echarts4r)
 # aggregates.R
 source("aggregates.R", local = knitr::knit_global())
 
-# data_prepare.R: the data of every country, by `geo`
+# data_prepare.R: the data of every country, by `geo`, and the averages of the
+# groups of countries in prop and propgdp (see group_names)
 RawData <- readRDS("RawData.rds")
 # Hungary's rows, which all the charts below show (and refer to by their numbers
 # in this table, as CategoryPaths does)
@@ -60,6 +61,9 @@ kiadas_dependency <- htmltools::htmlDependency(
                 window.addEventListener('beforeprint', function() {
                 render(Array.from(document.querySelectorAll('.kiadas-deferred')));
                 });
+                // The values of the countries read so far, by the id of their element (see
+                // countryValues() below)
+                var countryData = {};
                 
                 return {
                 // Renders the chart with the id `id` only once it comes within a screen's height
@@ -84,6 +88,13 @@ kiadas_dependency <- htmltools::htmlDependency(
                 onFilter: function(group, fn) {
                 new crosstalk.FilterHandle(group).on('change', function(e) { fn(e.value); });
                 fn(crosstalk.group(group).var('filter').get());
+                },
+                // The values of the countries that the charts of the same columns share, from
+                // the JSON in the element with the id `id` (see country_values_element()),
+                // parsed when a chart first needs them, and then kept for the others
+                countryValues: function(id) {
+                countryData[id] = countryData[id] || JSON.parse(document.getElementById(id).textContent);
+                return countryData[id];
                 },
                 // The lines of the tooltip of a category's planned and actual spending in a
                 // year, in a plan_actual_chart() or a plan_actual_heatmap(): the `marker` of its
@@ -113,6 +124,59 @@ kiadas_dependency <- htmltools::htmlDependency(
                 labels[1] + ': ' + bold(number(actual) + unit),
                 'Eltérés a tervtől: ' + bold(deviation)
                 ];
+                },
+                // The colour scale of the heatmap `chart` (of add_category_heatmap() or
+                // add_country_heatmap()): a function that draws it with the ticks it's given
+                // (from the bottom up, at their positions as fractions of the height of the
+                // bar), in the font and the colour of the labels of the axes, as a bar of the
+                // colours scale.stops (from the bottom up), scale.height px tall, with the ticks
+                // and their labels on its right, the labels at the ends within its height, so
+                // that it lines up with the plot. It's drawn at first beside the plot, 12px from
+                // it, from its top (where add_chart_layout() then puts it), and then over
+                // itself: as there are always 5 ticks, ECharts updates its elements one by one
+                // (it would mix up the old and the new ones, if the group were replaced)
+                colorScale: function(chart, scale) {
+                var option = chart.getOption(), label = option.yAxis[0].axisLabel;
+                var font = { fill: label.color, fontSize: label.fontSize,
+                fontFamily: option.textStyle.fontFamily };
+                var context = document.createElement('canvas').getContext('2d');
+                context.font = font.fontSize + 'px ' + font.fontFamily;
+                var drawn = false;
+                return function(ticks) {
+                var labelWidth = Math.max.apply(null, ticks.map(function(tick) {
+                return context.measureText(tick.label).width;
+                }));
+                var children = [{
+                type: 'rect', shape: { width: 12, height: scale.height }, silent: true,
+                style: {
+                fill: { type: 'linear', x: 0, y: 1, x2: 0, y2: 0, colorStops: scale.stops }
+                }
+                }];
+                ticks.forEach(function(tick, i) {
+                var y = Math.round(scale.height * (1 - tick.position));
+                children.push({
+                // A pixel high, within the height of the bar. (Not a line, whose bounds
+                // ECharts would widen, moving the bar below the top of the plot)
+                type: 'rect', silent: true, style: { fill: label.color },
+                shape: { x: 12, y: Math.min(y, scale.height - 1), width: 4, height: 1 }
+                }, {
+                type: 'text', x: 19, y: y, silent: true,
+                style: Object.assign({
+                text: tick.label,
+                verticalAlign: i === 0 ? 'bottom' : i === ticks.length - 1 ? 'top' : 'middle'
+                }, font)
+                });
+                });
+                var group = { id: 'colorScale', children: children };
+                if (!drawn) {
+                Object.assign(group, { type: 'group', right: 10, top: option.grid[0].top });
+                }
+                drawn = true;
+                chart.setOption({
+                graphic: { elements: [group] },
+                grid: { right: 10 + 19 + Math.ceil(labelWidth) + 12 }
+                });
+                };
                 }
                 };
                 })();
@@ -876,10 +940,10 @@ category_ids <- function(id) {
 # (or if there's no unit)
 unit_suffix_for <- function(unit) if (unit %in% c("", "%")) unit else paste0(" ", unit)
 
-# The sizes in a heatmap (see add_category_heatmap()), in px: the average height of
-# a row, the least height of the plot, and the height of the colour scale beside
-# it, from its top. The plot is at least 20px taller than the scale, as the name of
-# the x axis is beside its bottom
+# The sizes in a heatmap (see add_category_heatmap() and add_country_heatmap()), in
+# px: the average height of a row, the least height of the plot, and the height of
+# the colour scale beside it, from its top. The plot is at least 20px taller than
+# the scale, as the name of the x axis is beside its bottom
 heatmap_sizes <- list(row = 24, plot = 150, scale = 130)
 
 # The full names of the categories in `paths` (by their `code` and `nameLabel`), by
@@ -1284,55 +1348,9 @@ add_category_heatmap <- function(chart, var, axis_name, row_names, group,
           maximumFractionDigits: 1, maximumSignificantDigits: 2,
           roundingPriority: 'morePrecision'
         });
-        // The colour scale (see above), in the font and the colour of the labels of
-        // the axes: a bar of the colours, with ticks and labels on its right, the
-        // labels at the ends within its height, so that it lines up with the plot
-        var label = option.yAxis[0].axisLabel, scale = data.scale;
-        var font = { fill: label.color, fontSize: label.fontSize,
-                     fontFamily: option.textStyle.fontFamily };
-        var context = document.createElement('canvas').getContext('2d');
-        context.font = font.fontSize + 'px ' + font.fontFamily;
-        // Draws it with the ticks `ticks` (from the bottom up, at their positions as
-        // fractions of the height of the bar), at first beside the plot, 12px from it,
-        // from its top (where add_chart_layout() then puts it), and then over itself:
-        // as there are always 5 ticks, ECharts updates its elements one by one (it
-        // would mix up the old and the new ones, if the group were replaced)
-        var scaleDrawn = false;
-        function drawScale(ticks) {
-          var labelWidth = Math.max.apply(null, ticks.map(function(tick) {
-            return context.measureText(tick.label).width;
-          }));
-          var children = [{
-            type: 'rect', shape: { width: 12, height: scale.height }, silent: true,
-            style: {
-              fill: { type: 'linear', x: 0, y: 1, x2: 0, y2: 0, colorStops: scale.stops }
-            }
-          }];
-          ticks.forEach(function(tick, i) {
-            var y = Math.round(scale.height * (1 - tick.position));
-            children.push({
-              // A pixel high, within the height of the bar. (Not a line, whose bounds
-              // ECharts would widen, moving the bar below the top of the plot)
-              type: 'rect', silent: true, style: { fill: label.color },
-              shape: { x: 12, y: Math.min(y, scale.height - 1), width: 4, height: 1 }
-            }, {
-              type: 'text', x: 19, y: y, silent: true,
-              style: Object.assign({
-                text: tick.label,
-                verticalAlign: i === 0 ? 'bottom' : i === ticks.length - 1 ? 'top' : 'middle'
-              }, font)
-            });
-          });
-          var group = { id: 'colorScale', children: children };
-          if (!scaleDrawn) {
-            Object.assign(group, { type: 'group', right: 10, top: option.grid[0].top });
-          }
-          scaleDrawn = true;
-          chart.setOption({
-            graphic: { elements: [group] },
-            grid: { right: 10 + 19 + Math.ceil(labelWidth) + 12 }
-          });
-        }
+        // The colour scale (see above), which this draws with the ticks it's given
+        // (see kiadas.colorScale() in kiadas_dependency)
+        var scale = data.scale, drawScale = kiadas.colorScale(chart, scale);
 
         chart.setOption({
           // The year, the full name of the row and the value of the hovered cell, as
@@ -1580,15 +1598,16 @@ add_chart_frame <- function(chart, x_name = "Év") {
 # one for all the values, or a list of one for each column, by column). `type`
 # names the kind of chart (or, as a list, the kind for each type of the x axis, as
 # a scatter plot's axes may be linear or logarithmic). A heatmap's values are
-# listed by row, under the rows'
-# names in `row_names` (by their values on the y axis). A scatter plot's, with
+# listed by row, under the rows' names in `row_names` (by their values on the y
+# axis), and its y axis is said to show `rows_name`. A scatter plot's, with
 # `points`, are listed by point, under the name of its series: each labelled by
 # its column points$label in the data, with its values on the x and the y axis,
 # named points$x and points$y. (ECharts' own description, with e_aria(), would be
 # in English and list every column of the data, for every series, even the ones
 # filtered out)
 add_chart_description <- function(chart, type, unit_suffix, fraction_digits,
-                                  row_names = NULL, points = NULL) {
+                                  row_names = NULL, points = NULL,
+                                  rows_name = "kategóriák") {
   chart |>
     htmlwidgets::onRender("
       function(el, x, data) {
@@ -1635,7 +1654,7 @@ add_chart_description <- function(chart, type, unit_suffix, fraction_digits,
                      'Vízszintes tengely: ' + xAxis.get('name'));
           // A heatmap's y axis is named after what its colours show
           if (data.rowNames) {
-            parts.push('Függőleges tengely: kategóriák', 'A cellák színe: ' + yName);
+            parts.push('Függőleges tengely: ' + data.rowsName, 'A cellák színe: ' + yName);
           } else {
             parts.push('Függőleges tengely: ' + yName);
           }
@@ -1675,7 +1694,7 @@ add_chart_description <- function(chart, type, unit_suffix, fraction_digits,
         });
       }
     ", data = list(type = type, unit = unit_suffix, digits = fraction_digits,
-                   rowNames = row_names, points = points))
+                   rowNames = row_names, points = points, rowsName = rows_name))
 }
 
 # With several columns in `var`, a category_chart() (see there) plots the one
@@ -1842,6 +1861,15 @@ add_part_lines <- function(chart, paths, group, stack = FALSE, unit = "") {
   chart
 }
 
+# The colours of the parts in a chart of parts (see add_part_legend()) and of the
+# lines of a country_lines_chart(): ECharts' default palette has 9 colours, so this
+# adds 7 for the 16 Hungarian main groups, each picked (among colours of moderate
+# lightness and chroma) to differ as much as possible from all the colours before it,
+# by CIEDE2000
+chart_palette <- c("#5070dd", "#b6d634", "#505372", "#ff994d", "#0ca8df", "#ffd10a",
+                   "#fb628b", "#785db0", "#3fbe95", "#666018", "#a04024", "#c3b0e4",
+                   "#ab2965", "#167a4e", "#ae9d69", "#027588")
+
 # Names the series of a chart of parts (`paths`: see category_data(), or the points
 # of a plan_actual_chart(), see plan_actual_data()), one for each part in each
 # classification it's in, after their categories, and colours them. As the chart
@@ -1860,12 +1888,7 @@ add_part_legend <- function(chart, paths, group) {
   chart$x$opts$legend$data <- as.list(unique(labels))
 
   chart |>
-    # ECharts' default palette has 9 colours, so this adds 7 for the 16 Hungarian
-    # main groups, each picked (among colours of moderate lightness and chroma)
-    # to differ as much as possible from all the colours before it, by CIEDE2000
-    e_color(c("#5070dd", "#b6d634", "#505372", "#ff994d", "#0ca8df", "#ffd10a",
-              "#fb628b", "#785db0", "#3fbe95", "#666018", "#a04024", "#c3b0e4",
-              "#ab2965", "#167a4e", "#ae9d69", "#027588")) |>
+    e_color(chart_palette) |>
     htmlwidgets::onRender("
       function(el, x, data) {
         var chart = echarts.getInstanceByDom(el);
@@ -1995,10 +2018,14 @@ add_base_year_slider <- function(chart, ids, var, base_year = NULL) {
 # (`choices`, see plan_actual_data()), and the title only names the main group
 # (unless it's "Összesen"). The chart is also laid out again whenever the controls
 # with the ids `watch_ids` change, as they change the legend (as the radio buttons
-# of the colouring of a plan_actual_chart())
+# of the colouring of a plan_actual_chart()). Unless `year_label` is NULL, the title
+# ends with the year chosen with the slider `ids$base` (kept in its data-year
+# attribute), after `year_label`: in relative mode by default, the base year, after
+# "bázisév: ". Without a crosstalk group (`ids$group` NULL, as in a country_chart()),
+# the chart doesn't follow the filters
 add_chart_layout <- function(chart, title, ids, paths = NULL, relative = FALSE,
                              row_height = NULL, min_plot_height = 0, second = TRUE,
-                             watch_ids = NULL) {
+                             watch_ids = NULL, year_label = if (relative) "bázisév: ") {
   parts <- !is.null(paths)
   # The end of the title for each choice of the main group dropdown and of the
   # subgroup dropdown or, showing parts, of the type (or for each choice of the
@@ -2033,7 +2060,8 @@ add_chart_layout <- function(chart, title, ids, paths = NULL, relative = FALSE,
         // The subgroup dropdown or, showing parts, the radio buttons of the type, if
         // the chart has a second filter
         var second = data.secondId && document.getElementById(data.secondId);
-        // In relative mode, the slider of the base year
+        // The slider of the year that the title ends with, if any (in relative mode,
+        // of the base year)
         var base = data.baseId && document.getElementById(data.baseId);
         var download = document.getElementById(data.downloadId);
         // The height of the chart, and the room above and below the plot without
@@ -2068,11 +2096,14 @@ add_chart_layout <- function(chart, title, ids, paths = NULL, relative = FALSE,
 
         // In a heatmap, how much taller its rows are, data.rowHeight px each on
         // average, than the plot was at first. The plot is at least
-        // data.minPlotHeight tall, though. (The legend names each row)
+        // data.minPlotHeight tall, though. (The legend names each row or, if the y
+        // axis is of categories, as in a country_heatmap(), the axis does)
         function rowsExtra() {
-          var rows = chart.getModel().getComponent('legend').get('data').length *
-            data.rowHeight;
-          return Math.max(rows, data.minPlotHeight) - (height - gridTop - gridBottom);
+          var model = chart.getModel(), axis = model.getComponent('yAxis');
+          var names = axis.get('type') === 'category' ? axis.get('data') :
+            model.getComponent('legend').get('data');
+          return Math.max(names.length * data.rowHeight, data.minPlotHeight) -
+            (height - gridTop - gridBottom);
         }
 
         // Cuts the names in the legend short if one is too long for a line (see
@@ -2125,7 +2156,7 @@ add_chart_layout <- function(chart, title, ids, paths = NULL, relative = FALSE,
           // Unless the chart has no title, or the dropdowns aren't filled yet
           if (end != null) {
             var text = data.title + (end ? ': ' + end : '');
-            if (base) text += ', bázisév: ' + base.dataset.year;
+            if (base) text += ', ' + data.yearLabel + base.dataset.year;
             // Smaller on phones, where the title takes several lines anyway
             var fontSize = el.clientWidth < 500 ? 14 : 18, lineHeight = fontSize + 6;
             context.font = 'bold ' + fontSize + 'px ' + option.textStyle.fontFamily;
@@ -2187,7 +2218,7 @@ add_chart_layout <- function(chart, title, ids, paths = NULL, relative = FALSE,
         data.watchIds.forEach(function(id) {
           document.getElementById(id).addEventListener('change', schedule);
         });
-        new crosstalk.FilterHandle(data.group).on('change', schedule);
+        if (data.group) new crosstalk.FilterHandle(data.group).on('change', schedule);
         window.addEventListener('resize', schedule);
         // And at once, so that the chart is laid out before it's first shown
         update();
@@ -2195,7 +2226,7 @@ add_chart_layout <- function(chart, title, ids, paths = NULL, relative = FALSE,
     ", data = list(
       title = title, mainId = ids$main,
       secondId = if (second) { if (parts) ids$type else ids$sub },
-      baseId = if (relative) ids$base,
+      baseId = if (!is.null(year_label)) ids$base, yearLabel = year_label,
       downloadId = ids$download, group = ids$group, rowHeight = row_height,
       minPlotHeight = min_plot_height, watchIds = as.list(watch_ids),
       ends = if (!is.null(title)) {
@@ -2836,6 +2867,856 @@ plan_actual_heatmap <- function(axis_name, unit, title = NULL, var = "value",
     kiadas_dependency
   )
 }
+
+# The Hungarian names of the countries in RawData, by their codes (geo): the member
+# states of the EU
+country_names <- c(
+  BE = "Belgium", BG = "Bulgária", CZ = "Csehország", DK = "Dánia",
+  DE = "Németország", EE = "Észtország", IE = "Írország", EL = "Görögország",
+  ES = "Spanyolország", FR = "Franciaország", HR = "Horvátország",
+  IT = "Olaszország", CY = "Ciprus", LV = "Lettország", LT = "Litvánia",
+  LU = "Luxemburg", HU = "Magyarország", MT = "Málta", NL = "Hollandia",
+  AT = "Ausztria", PL = "Lengyelország", PT = "Portugália", RO = "Románia",
+  SI = "Szlovénia", SK = "Szlovákia", FI = "Finnország", SE = "Svédország"
+)
+# And those of the groups of countries (`countries` in data_prepare.R), whose prop
+# and propgdp are the averages of their members', weighted by their GDP. A
+# country_chart() shows them among the countries, in grey
+group_names <- c(EU27 = "EU27", V4 = "V4", EU15 = "EU15", EU11 = "EU11")
+
+# The filters and the bar chart of how much each country spent on a category of
+# COFOG in a year, by Eurostat's accrual-based data (type "actual_cofog") in
+# RawData, in the column `var`: a bar for each country (or group of countries: see
+# group_names) with data, from the largest value on the left to the smallest on the
+# right, with `axis_name` on the y axis and `unit` (unless it's "") after the values
+# in the tooltip. The category is chosen with two dropdowns, as in category_chart():
+# one of the main groups (at first Egészségügy) and one of its subgroups, after
+# "Összesen" for the main group as a whole (at first), and the year with a slider,
+# among the years with data for the category (at first the last one with data for
+# the most countries, as the latest years may only have data for a few). If `var`
+# has several columns, the chart plots the one chosen with radio buttons labelled
+# `var_label`, which offer them by their names (the first one at first), and
+# `axis_name` may give a different name for each. The bar of the country `highlight`
+# (by its code; none if NULL) stands out in another colour, with its name in bold,
+# and those of the groups of countries are grey. The chart has no title if `title`
+# is NULL, else `title` followed by the names of the main group and of the subgroup
+# (unless it's "Összesen"), as in category_chart(), and the year. As in
+# category_chart(), each call has its own element ids (made from `id`), and the
+# chart is only drawn once it comes near the viewport, then starting from the
+# current choices of its controls. The helpers below and those of category_chart()
+# make its parts
+country_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
+                          highlight = "HU", id = paste0(var[[1]], "_country")) {
+  # Named as category_ids() names them, as add_chart_layout() reads them. The
+  # controls aren't crosstalk filters (see country_data()), so there's no crosstalk
+  # group
+  ids <- list(main = paste0(id, "_main_group"), sub = paste0(id, "_subgroup"),
+              var = paste0(id, "_var_choice"), base = paste0(id, "_year"),
+              download = paste0(id, "_download"), chart = paste0(id, "_chart"))
+  columns <- unname(var)
+  axis_name <- rep_len(axis_name, length(var))
+  data <- country_data(columns)
+  # After the values, in the tooltip and in the description for screen readers,
+  # with at most this many decimals, as in category_chart()
+  unit_suffix <- unit_suffix_for(unit)
+  fraction_digits <- 1L
+  highlight <- if (!is.null(highlight)) country_names[[highlight]]
+  
+  # At first Egészségügy as a whole, in the first column, in the last year with
+  # data for the most countries
+  category <- data$categories[code == "GF07", label]
+  by_year <- data$values[[category]][[columns[[1]]]]
+  counts <- vapply(by_year, \(values) sum(!is.na(values)), 0L)
+  years <- names(by_year)[counts > 0]
+  year <- max(names(by_year)[counts == max(counts)])
+  
+  # Drawn as it is at first, though add_country_bars() draws it again at once,
+  # in case the browser restored other choices of the controls
+  chart <- data.table(country = data$countries, value = by_year[[year]])[
+    !is.na(value)][order(-value)] |>
+    e_chart(country, elementId = ids$chart) |>
+    e_bar(value) |>
+    # A single series, which the title names
+    e_legend(show = FALSE) |>
+    # The country and its value, as in the tooltip of the lines in
+    # add_category_lines(): kept within the chart, with its lines wrapped, and
+    # with the set decimals, or two significant digits if that's more precise
+    e_tooltip(trigger = "axis", axisPointer = list(type = "shadow"), confine = TRUE,
+              extraCssText = "white-space: normal;",
+              formatter = htmlwidgets::JS(sprintf("
+                function(params) {
+                  var p = params[0];
+                  var value = Number(p.value[1]).toLocaleString('hu-HU', {
+                    maximumFractionDigits: %d, maximumSignificantDigits: 2,
+                    roundingPriority: 'morePrecision'
+                  });
+                  return p.name + '<br>' + p.marker + ' ' + p.seriesName +
+                    ': <b style=\"white-space: nowrap\">' + value + '%s</b>';
+                }", fraction_digits, unit_suffix))) |>
+    e_y_axis(name = axis_name[[1]],
+             axisLabel = list(
+               # As in add_category_lines()
+               formatter = htmlwidgets::JS("
+                function(value) {
+                  return value.toLocaleString('hu-HU', { maximumFractionDigits: 20 });
+                }
+              ")
+             )) |>
+    add_chart_frame(x_name = "Ország") |>
+    # ECharts shrinks the plot so that the labels of the x axis (see below) end
+    # within these bounds, which leave room for the credit below them
+    e_grid(outerBounds = list(left = 0, right = 0, top = 0, bottom = 25))
+  # Every country is labelled, vertically (unless the labels would overlap, as on
+  # phones: see add_chart_frame()), the highlighted one in bold
+  chart$x$opts$xAxis[[1]]$axisLabel <- modifyList(
+    chart$x$opts$xAxis[[1]]$axisLabel,
+    list(interval = 0, rotate = 90, rich = list(highlight = list(fontWeight = "bold")),
+         formatter = htmlwidgets::JS(sprintf(
+           "function(value) { return value === %s ? '{highlight|' + value + '}' : value; }",
+           jsonlite::toJSON(highlight, auto_unbox = TRUE, null = "null")
+         )))
+  )
+  chart <- chart |>
+    add_country_bars(ids, data, columns, axis_name, year, highlight) |>
+    add_chart_description("Oszlopdiagram, az országok csökkenő sorrendben",
+                          unit_suffix, fraction_digits) |>
+    # The title names the chosen main group, subgroup and year. (CategoryPaths, which
+    # the title is made from as in a category_chart(), has the same COFOG categories
+    # under the same main groups)
+    add_chart_layout(title, ids, year_label = "")
+  
+  htmltools::attachDependencies(
+    htmltools::tagList(
+      # Unless the page already has them (see country_values_element())
+      country_values_element(data$values_id, data$values),
+      country_filters(ids, data$categories, category, var, var_label, years, year),
+      # The data files start with the name of the y axis, as the header of the
+      # values only names the category and the year, not what they're relative to
+      add_download_menu(chart, unit, id = ids$download,
+                        choice_id = if (length(var) > 1) ids$var,
+                        download_axis_name = TRUE),
+      defer_chart(ids$chart)
+    ),
+    kiadas_dependency
+  )
+}
+
+# The data of a country_chart(), a country_lines_chart() or a country_heatmap() (see
+# there) of the columns `columns` of RawData: the `categories` of COFOG, each main
+# group followed by its subgroups, with their codes (`code`), the codes of their main
+# groups (`main`), their labels (`label`, their nameLabel, as the dropdowns show
+# them) and their names (`name`); the Hungarian names of the `countries` with data,
+# including the groups of countries (see country_names and group_names), whose names
+# are also in `groups`; and their `values`, for each category (by label) and column,
+# in each year with data for any country (by year), in the order of `countries`, NA
+# where a country has none, which the page has in the element with the id
+# `values_id` (see country_values_element()). The charts draw from these in the
+# browser, as crosstalk would embed every row of the data in the page, with the
+# names of the columns, which would make it several megabytes larger. For the same
+# reason, the values are rounded to 4 significant digits, which is still more than
+# the bars, the lines, the cells, the tooltips and the data files need, as there are
+# no ratios of them to compute (see round_for_chart())
+country_data <- function(columns) {
+  rows <- RawData[type == "actual_cofog" & !is.na(cofog)]
+  geo_names <- c(country_names, group_names)
+  # A country without a name would be shown as "NA"
+  absent <- setdiff(rows$geo, names(geo_names))
+  if (length(absent) > 0) stop("No name for the countries ", toString(absent))
+  geo_codes <- sort(unique(rows$geo))
+  rows[, `:=`(country = match(geo, geo_codes), label = as.character(nameLabel))]
+  categories <- unique(rows[, .(code = cofog, main = cofogParent, label, name)])
+  # A main group's code comes right before those of its subgroups
+  setorder(categories, code)
+  values <- lapply(split(rows, by = "label"), \(category) {
+    by_year <- split(category, by = "yearchr", sorted = TRUE)
+    setNames(lapply(columns, \(column) lapply(by_year, \(year) {
+      values <- rep(NA_real_, length(geo_codes))
+      values[year$country] <- signif(year[[column]], 4)
+      values
+    })), columns)
+  })
+  list(categories = categories, countries = unname(geo_names[geo_codes]),
+       groups = unname(group_names), values = values,
+       # The same for the same columns, in whatever order
+       values_id = paste0("country_values_", paste(sort(columns), collapse = "_")))
+}
+
+# The ids of the elements of the values of the countries (see
+# country_values_element()) that the page being knitted already has
+country_values_embedded <- new.env()
+
+# The element of the `values` of country_data(), with the id `id`: a script element
+# of their JSON, which the browser doesn't parse until a chart first needs them (see
+# kiadas.countryValues() in kiadas_dependency). As each copy would add about a
+# megabyte to the page, it only has one: the first chart of the columns that's
+# knitted embeds them, and for the other charts of the same columns this is NULL, as
+# they read them from there (wherever it is on the page, as the charts are only drawn
+# once the page has been read: see defer_chart()). Outside knitting, as when a chunk
+# is run in RStudio, each chart is shown on a page of its own, so each embeds them
+country_values_element <- function(id, values) {
+  if (isTRUE(getOption("knitr.in.progress"))) {
+    if (!is.null(country_values_embedded[[id]])) return(NULL)
+    country_values_embedded[[id]] <- TRUE
+  }
+  json <- jsonlite::toJSON(values, na = "null", digits = 16, use_signif = TRUE)
+  # So that nothing in the data could end the element early, as a "</script>" would
+  # ("<\/" reads the same in JSON)
+  htmltools::tags$script(type = "application/json", id = id,
+                         htmltools::HTML(gsub("</", "<\\/", json, fixed = TRUE)))
+}
+
+# The controls of a country_chart() (see there), with the ids `ids` (see there),
+# laid out as in category_filters(): the dropdown of the main groups of the
+# `categories` (see country_data()), at first at the one labelled `category`, and
+# that of the subgroups of the chosen one, after "Összesen" for the main group as a
+# whole, which is chosen whenever the main group changes; the radio buttons of the
+# columns `var`, if there are several, labelled `var_label`; and unless `years` is
+# NULL (as in a country_lines_chart() or a country_heatmap()), the slider of the
+# year, at first at `year` among `years`, which the chart takes over once it's drawn
+# (see add_country_bars())
+country_filters <- function(ids, categories, category, var, var_label, years = NULL,
+                            year = NULL) {
+  # The choices of the subgroup dropdown, for each main group (by label)
+  groups <- split(categories, by = "main")
+  subgroups <- setNames(
+    lapply(groups, \(group) c("Összesen", group[code != main, label])),
+    vapply(groups, \(group) group[code == main, label], "")
+  )
+  
+  htmltools::div(
+    class = "d-flex flex-wrap align-items-end row-gap-2 mb-3",
+    # Not Bootstrap's column-gap-3, as in category_filters()
+    style = "column-gap: 1rem",
+    htmltools::div(
+      style = "flex: 1 1 20rem",
+      htmltools::tags$label(class = "form-label small mb-1", `for` = ids$main,
+                            "Főcsoport:"),
+      htmltools::tags$select(
+        id = ids$main, class = "form-select form-select-sm",
+        lapply(names(subgroups), \(label) htmltools::tags$option(
+          value = label, selected = if (label == category) NA, label
+        ))
+      )
+    ),
+    htmltools::div(
+      style = "flex: 1 1 20rem",
+      htmltools::tags$label(class = "form-label small mb-1", `for` = ids$sub,
+                            "Csoport:"),
+      htmltools::tags$select(id = ids$sub, class = "form-select form-select-sm")
+    ),
+    # Fills in the subgroup dropdown, whenever the main group changes, and at once,
+    # as the page is read (as in filter_select_dependent()), for the main group
+    # chosen then, which the browser may have restored when reloading the page. The
+    # change of the subgroup is what the chart follows (see add_country_bars())
+    htmltools::tags$script(htmltools::HTML(sprintf(
+      "(function() {
+        var subgroups = %s;
+        var main = document.getElementById(%s), sub = document.getElementById(%s);
+        function update() {
+          sub.replaceChildren.apply(sub, subgroups[main.value].map(function(label) {
+            return new Option(label, label);
+          }));
+          sub.dispatchEvent(new Event('change'));
+        }
+        main.addEventListener('change', update);
+        update();
+      })();",
+      jsonlite::toJSON(subgroups),
+      jsonlite::toJSON(ids$main, auto_unbox = TRUE),
+      jsonlite::toJSON(ids$sub, auto_unbox = TRUE)
+    ))),
+    if (length(var) > 1) htmltools::div(
+      # Full width on phones, where it's alone in its row
+      class = "flex-grow-1 flex-md-grow-0",
+      radio_buttons(id = ids$var, label = var_label, choices = var, compact = TRUE)
+    ),
+    if (!is.null(years)) htmltools::div(
+      style = "flex: 1 1 20rem",
+      htmltools::tags$label(
+        class = "form-label small mb-1", `for` = ids$base, "Év: ",
+        # The chosen year, which the chart updates, and also gives to screen readers
+        # as the value of the slider
+        htmltools::tags$span(id = paste0(ids$base, "_value"), `aria-hidden` = "true",
+                             year)
+      ),
+      # Its value is the position of the year among those offered
+      htmltools::tags$input(type = "range", class = "form-range", id = ids$base,
+                            min = 0, max = length(years) - 1, step = 1,
+                            value = match(year, years) - 1, `aria-valuetext` = year)
+    )
+  )
+}
+
+# The bars of a country_chart() (see there), with the ids `ids` (see there), from
+# `data` (see country_data()): a bar for each country with a value for the category
+# chosen with the dropdowns (the main group itself if the subgroup dropdown is at
+# "Összesen"), in the column chosen with the radio buttons (or in the only one of
+# `columns`), in the year chosen with the slider, sorted from the largest value to
+# the smallest (the ties by name). The y axis is named after the column, in
+# `axis_name`, and the series after the category and the year, which thus name the
+# values in the tooltip, in the description for screen readers and in the data
+# files. The slider offers the years with a value for the category in the column,
+# and when the choices change, it keeps its year if that's still offered, else it
+# moves to the nearest one that is. It starts from `year` (not from where the
+# browser may have restored it when reloading the page, as the years offered may
+# differ). The chosen year is also shown beside the slider, and kept in its
+# data-year attribute for the title, which is set after this so that it reads the
+# year already updated (see add_chart_layout()). The bar of the country named
+# `highlight` (if any) is orange, the fourth colour of ECharts' palette, whose first
+# colours the bars of the other countries, and those of the groups of countries
+# (`groups` in `data`) are grey
+add_country_bars <- function(chart, ids, data, columns, axis_name, year, highlight) {
+  htmlwidgets::onRender(chart, "
+    function(el, x, data) {
+      var chart = echarts.getInstanceByDom(el);
+      var main = document.getElementById(data.mainId);
+      var sub = document.getElementById(data.subId);
+      var choice = data.columnId && document.getElementById(data.columnId);
+      var slider = document.getElementById(data.yearId);
+      var output = document.getElementById(data.yearId + '_value');
+      // The chosen year, and the years offered
+      var year = data.year, offered = [];
+
+      // The label of the chosen category
+      function category() { return sub.value === 'Összesen' ? main.value : sub.value; }
+      function column() {
+        return choice ? choice.querySelector('input:checked').value : data.columns[0];
+      }
+      // The values of the chosen category in the chosen column, by year
+      function values() {
+        return kiadas.countryValues(data.valuesId)[category()][column()];
+      }
+
+      slider.addEventListener('input', function() {
+        year = offered[slider.value];
+        output.textContent = year;
+        slider.setAttribute('aria-valuetext', year);
+        slider.dataset.year = year;
+        var bars = [];
+        values()[year].forEach(function(value, i) {
+          if (value != null) bars.push({ name: data.countries[i], value: value });
+        });
+        bars.sort(function(a, b) {
+          return b.value - a.value || a.name.localeCompare(b.name, 'hu');
+        });
+        chart.setOption({
+          xAxis: { data: bars.map(function(bar) { return bar.name; }) },
+          yAxis: { name: data.axisNames[column()] },
+          series: [{
+            name: data.names[category()] + ', ' + year,
+            data: bars.map(function(bar) {
+              return {
+                name: bar.name, value: [bar.name, bar.value],
+                itemStyle: bar.name === data.highlight ? { color: '#ff994d' } :
+                  data.groups.includes(bar.name) ? { color: '#999999' } : {}
+              };
+            })
+          }]
+        });
+      });
+
+      // Offers the years with a value for the chosen category in the chosen column,
+      // at the chosen year or, if it isn't among them, at the nearest one. (As the
+      // keys of an object, the years come in ascending order)
+      function offer() {
+        var byYear = values();
+        offered = Object.keys(byYear).filter(function(y) {
+          return byYear[y].some(function(value) { return value != null; });
+        });
+        var at = 0;
+        offered.forEach(function(y, i) {
+          if (Math.abs(y - year) < Math.abs(offered[at] - year)) at = i;
+        });
+        slider.max = offered.length - 1;
+        slider.value = at;
+        slider.dispatchEvent(new Event('input'));
+      }
+      // The subgroup dropdown also changes whenever the main group does (see
+      // country_filters())
+      sub.addEventListener('change', offer);
+      if (choice) choice.addEventListener('change', offer);
+      offer();
+    }
+  ", data = list(
+    mainId = ids$main, subId = ids$sub, columnId = if (length(columns) > 1) ids$var,
+    yearId = ids$base, year = year, columns = as.list(columns),
+    axisNames = as.list(setNames(axis_name, columns)),
+    names = as.list(setNames(data$categories$name, data$categories$label)),
+    countries = as.list(data$countries), groups = as.list(data$groups),
+    valuesId = data$values_id, highlight = highlight
+  ))
+}
+
+# The filters and the line chart of how much each country spent on a category of
+# COFOG over the years, by Eurostat's accrual-based data (type "actual_cofog") in
+# RawData, in the column `var`: a line for each country (or group of countries: see
+# group_names), over the years with data for the category, with `axis_name` on the y
+# axis and `unit` (unless it's "") after the values in the tooltip. The category is
+# chosen with two dropdowns, as in country_chart() (at first Egészségügy as a
+# whole). If `var` has several columns, the chart plots the one chosen with radio
+# buttons labelled `var_label`, which offer them by their names (the first one at
+# first), and `axis_name` may give a different name for each. The legend lists all
+# the countries, but at first only the lines of `shown` (by their codes) are on, and
+# the others can be switched on there: `shown` come first in the legend, in their
+# order, and the others after them, in alphabetical order. The line of the country
+# `highlight` (by its code; none if NULL) stands out in orange, as its bar in a
+# country_chart(), and is thicker than the others. The chart has no title if `title`
+# is NULL, else `title` followed by the names of the main group and of the subgroup
+# (unless it's "Összesen"), as in category_chart(). As in category_chart(), each call
+# has its own element ids (made from `id`), and the chart is only drawn once it comes
+# near the viewport, then starting from the current choices of its controls. The
+# helpers of country_chart() and of category_chart() make its parts
+country_lines_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
+                                highlight = "HU",
+                                shown = c(highlight, "EU27", "EU15", "EU11", "V4"),
+                                id = paste0(var[[1]], "_country_lines")) {
+  # Named as in country_chart(), which also has a slider
+  ids <- list(main = paste0(id, "_main_group"), sub = paste0(id, "_subgroup"),
+              var = paste0(id, "_var_choice"), download = paste0(id, "_download"),
+              chart = paste0(id, "_chart"))
+  columns <- unname(var)
+  axis_name <- rep_len(axis_name, length(var))
+  data <- country_data(columns)
+  # As in country_chart()
+  unit_suffix <- unit_suffix_for(unit)
+  fraction_digits <- 1L
+  geo_names <- c(country_names, group_names)
+  # Before `highlight` is changed, as the default of `shown` reads it
+  absent <- setdiff(shown, names(geo_names))
+  if (length(absent) > 0) stop("No name for the countries ", toString(absent))
+  shown <- intersect(geo_names[shown], data$countries)
+  highlight <- if (!is.null(highlight)) country_names[[highlight]]
+  others <- setdiff(data$countries, shown)
+  # The names of the lines, in the order of the legend (and of the tooltip and the
+  # data files), the others sorted by the Hungarian rules (in which É goes with E)
+  lines <- c(shown, stringi::stri_sort(others, locale = "hu"))
+  # At first Egészségügy as a whole, as in country_chart()
+  category <- data$categories[code == "GF07", label]
+
+  # The lines, without their points, which add_country_lines() adds at once, as it
+  # does the years of the x axis (an empty list of them here would make echarts4r's
+  # e_x_axis() warn): that of `highlight` thicker than the others, and drawn over them
+  # (whose z is ECharts' default for lines, 3). Hovering a line, or its name in the
+  # legend, highlights it, as in category_chart()
+  chart <- e_chart(elementId = ids$chart)
+  chart$x$opts$xAxis <- list(list(type = "category", boundaryGap = TRUE))
+  chart$x$opts$series <- lapply(lines, \(name) c(
+    list(name = name, type = "line", data = list(), emphasis = list(focus = "series")),
+    if (identical(name, highlight)) list(lineStyle = list(width = 3), z = 4)
+  ))
+  chart$x$opts$legend <- list(
+    data = as.list(lines),
+    selected = as.list(setNames(rep(FALSE, length(others)), others))
+  )
+  chart <- chart |>
+    # As the tooltip of the lines in add_category_lines(), but the value of a point
+    # is the second element of its data (the first is its year), as the data aren't
+    # crosstalk's rows here
+    e_tooltip(trigger = "axis", confine = TRUE, extraCssText = "white-space: normal;",
+              formatter = htmlwidgets::JS(sprintf("
+                function(params) {
+                  // Leaves out the lines without a value in the year, and shows no
+                  // tooltip if none has one
+                  params = params.filter(function(p) { return p.value[1] != null; });
+                  if (!params.length) return '';
+                  return params[0].axisValue + '<br>' +
+                    params.map(function(p) {
+                      var value = Number(p.value[1]).toLocaleString('hu-HU', {
+                        maximumFractionDigits: %d, maximumSignificantDigits: 2,
+                        roundingPriority: 'morePrecision'
+                      });
+                      return p.marker + ' ' + p.seriesName +
+                        ': <b style=\"white-space: nowrap\">' + value + '%s</b>';
+                    }).join('<br>');
+                }", fraction_digits, unit_suffix))) |>
+    e_y_axis(name = axis_name[[1]],
+             axisLabel = list(
+               # As in add_category_lines()
+               formatter = htmlwidgets::JS("
+                function(value) {
+                  return value.toLocaleString('hu-HU', { maximumFractionDigits: 20 });
+                }
+              ")
+             )) |>
+    add_chart_frame() |>
+    add_country_lines(ids, data, lines, columns, axis_name, highlight) |>
+    add_chart_description("Vonaldiagram", unit_suffix, fraction_digits) |>
+    # The title names the chosen main group and subgroup, as in a country_chart()
+    add_chart_layout(title, ids)
+
+  htmltools::attachDependencies(
+    htmltools::tagList(
+      # Unless the page already has them (see country_values_element())
+      country_values_element(data$values_id, data$values),
+      country_filters(ids, data$categories, category, var, var_label),
+      # The data files start with the name of the y axis, as the headers of the
+      # values only name the countries, not what the values are relative to
+      add_download_menu(chart, unit, id = ids$download,
+                        choice_id = if (length(var) > 1) ids$var,
+                        download_axis_name = TRUE),
+      defer_chart(ids$chart)
+    ),
+    kiadas_dependency
+  )
+}
+
+# The lines of a country_lines_chart() (see there), with the ids `ids` (see there),
+# from `data` (see country_data()): those of the countries named `lines` (in the
+# order of the series), each of the country's values for the category chosen with
+# the dropdowns (the main group itself if the subgroup dropdown is at "Összesen"), in
+# the column chosen with the radio buttons (or in the only one of `columns`), over
+# the years with a value for the category in the column for any country, with a gap
+# where the country has none. The y axis is named after the column, in `axis_name`.
+# Each line switched on in the legend has a colour of its own: that of the country
+# named `highlight` (if any) is orange, as its bar in add_country_bars(), and each of
+# the others takes the first colour of chart_palette (without the orange) that no
+# other line shown has, and keeps it while it's shown, so that the lines shown differ
+# in colour however they're switched on and off (as long as there are colours
+# enough: beyond that, the colours are taken again, in turn)
+add_country_lines <- function(chart, ids, data, lines, columns, axis_name, highlight) {
+  highlight_color <- "#ff994d"
+  htmlwidgets::onRender(chart, "
+    function(el, x, data) {
+      var chart = echarts.getInstanceByDom(el);
+      var main = document.getElementById(data.mainId);
+      var sub = document.getElementById(data.subId);
+      var choice = data.columnId && document.getElementById(data.columnId);
+
+      // As in add_country_bars()
+      function category() { return sub.value === 'Összesen' ? main.value : sub.value; }
+      function column() {
+        return choice ? choice.querySelector('input:checked').value : data.columns[0];
+      }
+
+      // Draws the lines of the chosen category in the chosen column, over the years
+      // with a value for any country (as the keys of an object, the years come in
+      // ascending order), with null where a country has none, which ECharts leaves a
+      // gap for
+      function update() {
+        var byYear = kiadas.countryValues(data.valuesId)[category()][column()];
+        var years = Object.keys(byYear).filter(function(y) {
+          return byYear[y].some(function(value) { return value != null; });
+        });
+        chart.setOption({
+          xAxis: { data: years },
+          yAxis: { name: data.axisNames[column()] },
+          series: data.positions.map(function(i) {
+            return { data: years.map(function(y) { return [y, byYear[y][i]]; }) };
+          })
+        });
+      }
+      // The subgroup dropdown also changes whenever the main group does (see
+      // country_filters())
+      sub.addEventListener('change', update);
+      if (choice) choice.addEventListener('change', update);
+      update();
+
+      // The colours of the lines shown, by name (see above): given out at once, and
+      // whenever a line is switched on or off in the legend. `selected` is ECharts'
+      // map of the names switched on (true) and off (false) in the legend, in which
+      // a name that's missing is on
+      var colors = {};
+      function recolor(selected) {
+        var on = data.lines.filter(function(name) { return selected[name] !== false; });
+        Object.keys(colors).forEach(function(name) {
+          if (on.indexOf(name) < 0) delete colors[name];
+        });
+        on.forEach(function(name) {
+          if (colors[name]) return;
+          var used = Object.values(colors);
+          colors[name] = name === data.highlight ? data.highlightColor :
+            data.palette.find(function(color) { return used.indexOf(color) < 0; }) ||
+            data.palette[used.length % data.palette.length];
+        });
+        chart.setOption({
+          series: data.lines.map(function(name) {
+            return colors[name] ? { color: colors[name] } : {};
+          })
+        });
+      }
+      recolor(chart.getOption().legend[0].selected || {});
+      chart.on('legendselectchanged', function(e) { recolor(e.selected); });
+    }
+  ", data = list(
+    mainId = ids$main, subId = ids$sub, columnId = if (length(columns) > 1) ids$var,
+    columns = as.list(columns), axisNames = as.list(setNames(axis_name, columns)),
+    valuesId = data$values_id, lines = as.list(lines),
+    # The position of each line's country among the countries of `data`
+    positions = as.list(match(lines, data$countries) - 1L),
+    highlight = highlight, highlightColor = highlight_color,
+    palette = as.list(setdiff(chart_palette, highlight_color))
+  ))
+}
+
+# The filters and the heatmap of how much each country spent on a category of COFOG
+# over the years, by Eurostat's accrual-based data (type "actual_cofog") in RawData,
+# in the column `var`: a row for each country (or group of countries: see
+# group_names), labelled by its name, and a column for each year with data for the
+# category, with each cell coloured by the country's value in the year (see
+# add_country_heatmap()), `axis_name` on the y axis, as it tells what the colours
+# show, and `unit` (unless it's "") after the values in the tooltip. Where a country
+# has no value, its cell is left empty (its whole row, if it has none for the
+# category). The category is chosen with two dropdowns, as in country_chart() (at
+# first Egészségügy as a whole). If `var` has several columns, the chart shows the
+# one chosen with radio buttons labelled `var_label`, which offer them by their
+# names (the first one at first), and `axis_name` may give a different name for
+# each. The rows of `top` (by their codes) come first, from the top, in their order,
+# and the others after them, in alphabetical order, as in the legend of a
+# country_lines_chart(), and the name of the country `highlight` (by its code; none
+# if NULL) is in bold, as in a country_chart(). The rows are as tall as those of a
+# category_chart() on average. The chart has no title if `title` is NULL, else
+# `title` followed by the names of the main group and of the subgroup (unless it's
+# "Összesen"), as in category_chart(). As in category_chart(), each call has its own
+# element ids (made from `id`), and the chart is only drawn once it comes near the
+# viewport, then starting from the current choices of its controls. The helpers of
+# country_chart() and of category_chart() make its parts
+country_heatmap <- function(var, axis_name, unit, title = NULL, var_label = NULL,
+                            highlight = "HU",
+                            top = c(highlight, "EU27", "EU15", "EU11", "V4"),
+                            id = paste0(var[[1]], "_country_heatmap")) {
+  # Named as in country_chart()
+  ids <- list(main = paste0(id, "_main_group"), sub = paste0(id, "_subgroup"),
+              var = paste0(id, "_var_choice"), download = paste0(id, "_download"),
+              chart = paste0(id, "_chart"))
+  columns <- unname(var)
+  axis_name <- rep_len(axis_name, length(var))
+  data <- country_data(columns)
+  # As in country_chart()
+  unit_suffix <- unit_suffix_for(unit)
+  fraction_digits <- 1L
+  geo_names <- c(country_names, group_names)
+  # Before `highlight` is changed, as the default of `top` reads it
+  absent <- setdiff(top, names(geo_names))
+  if (length(absent) > 0) stop("No name for the countries ", toString(absent))
+  top <- intersect(geo_names[top], data$countries)
+  highlight <- if (!is.null(highlight)) country_names[[highlight]]
+  # The names of the rows, from the top, the others sorted as in
+  # country_lines_chart(). They're also the rows' values on the y axis, by which the
+  # data files and the description for screen readers name the rows
+  rows <- c(top, stringi::stri_sort(setdiff(data$countries, top), locale = "hu"))
+  row_names <- as.list(setNames(rows, rows))
+  # At first Egészségügy as a whole, as in country_chart()
+  category <- data$categories[code == "GF07", label]
+
+  chart <- e_chart(elementId = ids$chart)
+  # A row for each cell, which add_country_heatmap() fills in (and the years of the x
+  # axis), as add_download_menu() and add_chart_description() read the row and the
+  # year of a cell of a heatmap from its row of data, as an object
+  chart$x$opts$dataset <- list(list(
+    dimensions = list(list(name = "yearchr", type = "ordinal"),
+                      list(name = "country", type = "ordinal"),
+                      list(name = "value", type = "number")),
+    source = list()
+  ))
+  # The cells line the axes, which would only show beside the empty ones, as in
+  # add_category_heatmap()
+  chart$x$opts$xAxis <- list(list(type = "category", boundaryGap = TRUE,
+                                  axisLine = list(show = FALSE)))
+  # Every row is labelled, the highlighted one in bold, as in a country_chart(). The
+  # name of the axis starts above the rows, as in add_category_heatmap()
+  chart$x$opts$yAxis <- list(list(
+    type = "category", data = as.list(rows), inverse = TRUE, name = axis_name[[1]],
+    nameLocation = "start", nameTextStyle = list(align = "left"),
+    axisLine = list(show = FALSE), axisTick = list(show = FALSE),
+    axisLabel = list(
+      interval = 0, rich = list(highlight = list(fontWeight = "bold")),
+      formatter = htmlwidgets::JS(sprintf(
+        "function(value) { return value === %s ? '{highlight|' + value + '}' : value; }",
+        jsonlite::toJSON(highlight, auto_unbox = TRUE, null = "null")
+      ))
+    )
+  ))
+  # White lines between the cells, and dark ones around the highlighted cell, as in
+  # add_category_heatmap()
+  chart$x$opts$series <- list(list(
+    id = "heatmap", type = "heatmap",
+    encode = list(x = "yearchr", y = "country", value = "value"),
+    itemStyle = list(borderColor = "#fff", borderWidth = 1),
+    emphasis = list(itemStyle = list(borderColor = "#333", borderWidth = 1.5))
+  ))
+  chart <- chart |>
+    # ECharts shrinks the plot so that the names of the countries end within these
+    # bounds, 10px from the left edge, as the title
+    e_grid(left = 10, outerBounds = list(left = 10, right = 0, top = 0, bottom = 0)) |>
+    # The year, then the country and its value, as in the tooltip of
+    # add_category_heatmap(): kept within the chart, with its lines wrapped, and with
+    # the set decimals, or two significant digits if that's more precise. (With a
+    # dataset, p.value is the whole data row as an object)
+    e_tooltip(trigger = "item", confine = TRUE, extraCssText = "white-space: normal;",
+              formatter = htmlwidgets::JS(sprintf("
+                function(p) {
+                  var value = Number(p.value.value).toLocaleString('hu-HU', {
+                    maximumFractionDigits: %d, maximumSignificantDigits: 2,
+                    roundingPriority: 'morePrecision'
+                  });
+                  return p.value.yearchr + '<br>' + p.marker + ' ' + p.value.country +
+                    ': <b style=\"white-space: nowrap\">' + value + '%s</b>';
+                }", fraction_digits, unit_suffix))) |>
+    add_chart_frame() |>
+    add_country_heatmap(ids, data, rows, columns, axis_name, heatmap_sizes) |>
+    add_chart_description("Hőtérkép", unit_suffix, fraction_digits, row_names,
+                          rows_name = "országok és országcsoportok") |>
+    # The title names the chosen main group and subgroup, as in a country_chart()
+    add_chart_layout(title, ids, row_height = heatmap_sizes$row,
+                     min_plot_height = heatmap_sizes$plot)
+
+  htmltools::attachDependencies(
+    htmltools::tagList(
+      # Unless the page already has them (see country_values_element())
+      country_values_element(data$values_id, data$values),
+      country_filters(ids, data$categories, category, var, var_label),
+      # The data files start with the name of the y axis, as the headers of the
+      # values only name the countries, not what the values are relative to
+      add_download_menu(chart, unit, id = ids$download,
+                        choice_id = if (length(var) > 1) ids$var,
+                        download_axis_name = TRUE, row_names = row_names),
+      defer_chart(ids$chart)
+    ),
+    kiadas_dependency
+  )
+}
+
+# The cells of a country_heatmap() (see there), with the ids `ids` (see there), from
+# `data` (see country_data()): in the rows of the countries named `rows` (the
+# categories of the y axis), a cell for each year in which the country has a value
+# for the category chosen with the dropdowns (the main group itself if the subgroup
+# dropdown is at "Összesen"), in the column chosen with the radio buttons (or in the
+# only one of `columns`), over the years with a value for the category in the column
+# for any country, as in add_country_lines(). The y axis is named after the column,
+# in `axis_name`. The cells are coloured by their values, along viridis from light
+# (the smallest) to dark (the largest), on a linear scale from the 5th to the 95th
+# percentile of the values shown, with the values beyond in the colours at the ends:
+# over the whole range, a few extreme values (as Ireland's economic affairs in 2010,
+# when it rescued its banks) would leave the others barely told apart. The range is
+# widened to the 5 ticks of the colour scale beside the plot (see
+# kiadas.colorScale()), spaced evenly by the least of 1, 1.5, 2, 2.5, 3, 4, 5, 6 and
+# 8 times a power of 10 that lets them cover it from a multiple of the step. As in
+# add_category_heatmap(), the colours run in pieces 1/64 of the scale wide, each in
+# the colour of its middle, and the scale is `sizes$scale` px tall
+add_country_heatmap <- function(chart, ids, data, rows, columns, axis_name, sizes) {
+  # The colours of the middles of the pieces, from the bottom of the scale to its top
+  colors <- grDevices::hcl.colors(65, "viridis", rev = TRUE)
+  # Its pieces are set below, before any cell is drawn. Its own legend can't label a
+  # gradient between its ends, so it's hidden, as in add_category_heatmap()
+  chart$x$opts$visualMap <- list(list(
+    type = "piecewise", show = FALSE, seriesIndex = 0, dimension = "value"
+  ))
+  htmlwidgets::onRender(chart, "
+    function(el, x, data) {
+      var chart = echarts.getInstanceByDom(el);
+      var main = document.getElementById(data.mainId);
+      var sub = document.getElementById(data.subId);
+      var choice = data.columnId && document.getElementById(data.columnId);
+      // The colour scale (see above), which this draws with the ticks it's given (see
+      // kiadas.colorScale() in kiadas_dependency)
+      var drawScale = kiadas.colorScale(chart, data.scale);
+
+      // As in add_country_bars()
+      function category() { return sub.value === 'Összesen' ? main.value : sub.value; }
+      function column() {
+        return choice ? choice.querySelector('input:checked').value : data.columns[0];
+      }
+
+      // `value` without the error of floating-point arithmetic (as in 3 * 0.1)
+      function round(value) { return Number(value.toPrecision(12)); }
+
+      // The least of 1, 1.5, 2, 2.5, 3, 4, 5, 6 and 8 times a power of 10 that is at
+      // least `value` (a positive number)
+      function niceStep(value) {
+        var power = Math.pow(10, Math.floor(Math.log10(value)));
+        return [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]
+          .map(function(m) { return round(m * power); })
+          .find(function(step) { return step >= value; });
+      }
+
+      // The quantile `p` of the sorted `values`, interpolated between the two values
+      // around it, as R's quantile() does by default
+      function quantile(values, p) {
+        var h = (values.length - 1) * p, i = Math.floor(h);
+        return i + 1 < values.length ? values[i] + (h - i) * (values[i + 1] - values[i]) :
+          values[i];
+      }
+
+      // The colouring of the cells of the values `values` (see above): the pieces of
+      // the visualMap, and the ticks of the colour scale
+      function coloring(values) {
+        values = values.slice().sort(function(a, b) { return a - b; });
+        var lo = quantile(values, 0.05), hi = quantile(values, 0.95);
+        // If all the values are the same, a step of a quarter of their size, or of 1
+        // if they're all 0
+        var step = niceStep((hi - lo) / 4 || Math.abs(hi) / 4 || 1);
+        var start = round(Math.floor(round(lo / step)) * step);
+        // A larger step, while 4 of them from its multiple at or below `lo` would end
+        // below `hi`
+        while (round(start + 4 * step) < hi) {
+          step = niceStep(1.01 * step);
+          start = round(Math.floor(round(lo / step)) * step);
+        }
+        // The bound between the pieces i and i + 1, halfway between their middles,
+        // which run from `start` to the last tick
+        var n = data.colors.length;
+        function bound(i) { return start + 4 * step * (i + 0.5) / (n - 1); }
+        return {
+          pieces: data.colors.map(function(color, i) {
+            var piece = { color: color };
+            if (i > 0) piece.gte = bound(i - 1);
+            if (i < n - 1) piece.lt = bound(i);
+            return piece;
+          }),
+          ticks: [0, 1, 2, 3, 4].map(function(i) {
+            var text = round(start + i * step).toLocaleString('hu-HU', {
+              maximumFractionDigits: 20
+            });
+            return { position: i / 4,
+                     label: i === 0 ? '\\u2264 ' + text : i === 4 ? '\\u2265 ' + text : text };
+          })
+        };
+      }
+
+      // Draws the cells of the chosen category in the chosen column, over the years
+      // with a value for any country (as the keys of an object, the years come in
+      // ascending order), row by row, so that the data files and the description
+      // list the rows in their order (see add_download_menu())
+      function update() {
+        var byYear = kiadas.countryValues(data.valuesId)[category()][column()];
+        var years = Object.keys(byYear).filter(function(y) {
+          return byYear[y].some(function(value) { return value != null; });
+        });
+        var cells = [];
+        data.rows.forEach(function(name, r) {
+          years.forEach(function(year) {
+            var value = byYear[year][data.positions[r]];
+            if (value != null) cells.push({ yearchr: year, country: name, value: value });
+          });
+        });
+        var colors = coloring(cells.map(function(cell) { return cell.value; }));
+        chart.setOption({
+          dataset: { source: cells },
+          xAxis: { data: years },
+          yAxis: { name: data.axisNames[column()] },
+          visualMap: { pieces: colors.pieces }
+        });
+        drawScale(colors.ticks);
+      }
+      // The subgroup dropdown also changes whenever the main group does (see
+      // country_filters())
+      sub.addEventListener('change', update);
+      if (choice) choice.addEventListener('change', update);
+      update();
+    }
+  ", data = list(
+    mainId = ids$main, subId = ids$sub, columnId = if (length(columns) > 1) ids$var,
+    columns = as.list(columns), axisNames = as.list(setNames(axis_name, columns)),
+    valuesId = data$values_id, rows = as.list(rows),
+    # The position of each row's country among the countries of `data`
+    positions = as.list(match(rows, data$countries) - 1L),
+    colors = as.list(colors),
+    # The colours of the bar of the scale, from the bottom up
+    scale = list(height = sizes$scale,
+                 stops = Map(\(offset, color) list(offset = offset, color = color),
+                             seq(0, 1, length.out = length(colors)), colors))
+  ))
+}
 ```
 
 # A magyar költségvetés kiadásai
@@ -2975,3 +3856,51 @@ plan_actual_heatmap(
 ```
 
 (Ez az ábra is él azzal az eszközzel, hogy az oszlopok magassága eltérő, itt ez a tervbeli arányokat tükrözi, de szemben az előző esettel, ez itt csak illusztratív: itt nincs olyan követelmény, hogy az egyes eltérések nullára zárjanak, hiszen a ténylegesen elköltött pénz összességében is eltérhet attól, mint ami a tervezett volt.)
+
+## Nemzetközi összehasonlítások
+
+A fentiekben legtöbbször időbeli összehasonlításokról beszéltem (ugyanazon ország különböző időpontbeli adatainak egybevetése). Ennek az az oka, hogy a "többet költünk, mint régen?" ("mennyivel költünk többet?" stb.) típusú kérdések megválaszolásához erre van szükség -- azokkal a korrekciókkal, amik a vázolt okokból szükségesek, és amiket a fentiekben igyekeztem is megtenni a megfelelő mutatók használatával. De valójában egyéb kérdések is felvethetőek, vegyük ugyanis észre, hogy az "eleget költünk?" ("nem kellene-e még többet költeni?" stb.) típusú kérdések már *mást* jelentenek. Ezeknél ugyanis nem egy múltbeli állapothoz való viszonyítást tartalmaz a kérdés, hanem valamiféle ideális/elég jó/elvárható állapothoz való viszonyítást. Lehet, hogy szó szerint nincsen benne, de implicite ezt tartalmazza az "eleget költünk-e" kérdés.
+
+A bökkenő az, hogy míg a múltbeli adat egy egyértelműen meghatározott érték (még ha az interpretációja nem is minden problémától mentes, mint láttuk), addig az, hogy mit nevezünk "ideális", "elég jó", "elvárható" értéknek, egy sokkal-sokkal képlékenyebb dolog. A gyakorlatban sokszor más országokhoz viszonyítanak; ez persze azt a háttérfeltételezést jelenti, hogy ők "ideálisan", "elég jól", "elvárhatóan" költenek (például) egészségügyre. Gyakori, hogy pont emiatt Nyugat-Európa a viszonyítási alap (mondván, hogy ők jelentik a fejlett országcsoportot). Néha viszont éppen a környező országokhoz szokás viszonyítani, ebben is van racionalitás, mert lehet arra hivatkozni, hogy ez kiszűri a kormány által -- pláne rövid távon -- nehezen befolyásolható, múltból örökölt tényezőket. Akárhogy is, látni kell, hogy ha egy ilyen elemzéshez összehasonlítási alapot képező országot vagy országokat választunk, akkor azzal egyúttal kérdést is választunk, amire válaszolni fogunk.
+
+Erre tekintettel a lenti ábrák az egyes országok egyedi adatain túl tartalmazzák a legkézenfekvőbb országcsoportok adatait is: az egész európai uniót (EU27), a régi nyugati tagállamokat (EU15), az újonnan csatlakozott keletieket (EU11) és a visegrádi négyeket (V4).
+
+Az összehasonlításnál természetesen fontos, hogy ne legyünk egyoldalúak: ha azt mondjuk, hogy "a fejlett államok többet költenek egészségügyre!", akkor tegyük azt is hozzá: mire költenek kevesebbet? Megint csak, az arányok az izgalmasak, nem az abszolút számok.
+
+A lenti összehasonlítások a korábban látott magyar vizsgálatok közül mindössze kettőt fognak használni: a kiadások GDP-hez és teljes kiadáshoz viszonyított arányát. Ennek az az oka, hogy ezek vannak százalékban mérve, ami ugyanaz a mértékegység minden országra, az összes többi vizsgálat eredménye pénznemben van mérve, ami nemzetközi összehasonlításnál már különböző lenne (forint, euró, korona stb.), amik egymással való összevetése újabb problémákat és kérdéseket hozna be.
+
+Kezdjük elsőként egy egyszerű időbeli vizsgálattal: nézzük meg, hogy egy adott kategóriára költött pénz hogyan alakult a különböző országoknál időben. Az ábrán alapbeállítás szerint Magyarország és a négy nevezetes európai országcsoport jelenik meg, de bármely további ország megjeleníthető, akár több is:
+
+```{r}
+country_lines_chart(
+  c("GDP" = "propgdp", "Összes kiadás" = "prop"),
+  axis_name = c("Kiadás [a GDP %-ában]", "Kiadás [az összes kiadás %-ában]"),
+  unit = "%",
+  var_label = "Viszonyítási alap:",
+  title = "Az európai uniós országok kiadásainak alakulása"
+)
+```
+
+A fenti ábra egyik problémája, hogy ha nagyon sok országot jelenítenénk meg rajta, akkor hamar áttekinthetetlenné válna. Hasonló helyzetet már láttunk, úgyhogy itt is bevethetjük a hőtérképes ábrát, hogy az összes ország egyszerre megjeleníthető legyen:
+
+```{r}
+country_heatmap(
+  c("GDP" = "propgdp", "Összes kiadás" = "prop"),
+  axis_name = c("Kiadás [a GDP %-ában]", "Kiadás [az összes kiadás %-ában]"),
+  unit = "%",
+  var_label = "Viszonyítási alap:",
+  title = "Az európai uniós országok kiadásainak alakulása"
+)
+```
+
+Adott év adatait ábrázolhatjuk oszlopdiagramon is:
+
+```{r}
+country_chart(
+  c("GDP" = "propgdp", "Összes kiadás" = "prop"),
+  axis_name = c("Kiadás [a GDP %-ában]", "Kiadás [az összes kiadás %-ában]"),
+  unit = "%",
+  var_label = "Viszonyítási alap:",
+  title = "Az európai uniós országok kiadásai"
+)
+```
