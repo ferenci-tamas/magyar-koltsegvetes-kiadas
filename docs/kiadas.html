@@ -1650,6 +1650,7 @@ Bázisév:
 <p>Az összehasonlításnál természetesen fontos, hogy ne legyünk egyoldalúak: ha azt mondjuk, hogy „a fejlett államok többet költenek egészségügyre!”, akkor tegyük azt is hozzá: mire költenek kevesebbet? Megint csak, az arányok az izgalmasak, nem az abszolút számok.</p>
 <p>A lenti összehasonlítások a korábban látott magyar vizsgálatok közül mindössze kettőt fognak használni: a kiadások GDP-hez és teljes kiadáshoz viszonyított arányát (illetve alcsoportok vizsgálatakor a főcsoportokhoz viszonyított arányt). Ennek az az oka, hogy ezek vannak százalékban mérve, ami ugyanaz a mértékegység minden országra, az összes többi vizsgálat eredménye pénznemben van mérve, ami nemzetközi összehasonlításnál már különböző lenne (forint, euró, korona stb.), amik egymással való összevetése újabb problémákat és kérdéseket hozna be.</p>
 <p>Mivel a lenti adatok mind a nemzetközi adatszolgáltatásból származnak, így mindegyik eredményszemléletű, mindegyik a tényleges teljesítést (nem a tervezetet) mutatja, és csak a COFOG szerinti bontásban érhető el. Nagyjából egy év időbeli késleltetés lehet az adatokban: a tényleges teljesítés miatt eleve csak a már lezárt évekről lehet adat, de elképzelhető, hogy az utolsó még abból sincs meg.</p>
+<p>A nemzetközi vizsgálatok azért nehezebbek, mert két dimenziónk (ország és idő) is van az alapon (kategória) felül, így az összehasonlítási lehetőségek száma is megnő.</p>
 <p>Kezdjük elsőként egy egyszerű időbeli vizsgálattal: nézzük meg, hogy egy adott kategóriára költött pénz hogyan alakult a különböző országoknál időben. Az ábrán alapbeállítás szerint Magyarország és a négy nevezetes európai országcsoport jelenik meg, de bármely további ország megjeleníthető, akár több is:</p>
 <div class="cell">
 <div class="cell-output-display no-overflow-x">
@@ -1875,7 +1876,7 @@ Bázisév:
 <script>kiadas.defer("propgdp_country_heatmap_chart");</script>
 </div>
 </div>
-<p>Adott év adatait ábrázolhatjuk oszlopdiagramon is:</p>
+<p>A másik csapásirány az, ha az idődimenziót nem használjuk – ehhez egy évre kell szorítkoznunk. Ilyenkor már kényelmesen ábrázolható több, akár az összes ország is, például egy oszlopdiagramon:</p>
 <div class="cell">
 <div class="cell-output-display no-overflow-x">
 <div class="d-flex flex-wrap align-items-end row-gap-2 mb-3" style="column-gap: 1rem">
@@ -1994,7 +1995,7 @@ Bázisév:
 <script>kiadas.defer("propgdp_country_chart");</script>
 </div>
 </div>
-<p>Vagy pedig az összetételt:</p>
+<p>Itt is igaz, hogy nagyon jól ábrázolható az összetétel: a fentiek egy kategóriát mutatnak meg, de ábrázolhatjuk akár az összes kategóriát is. Ha ráadásul ezeket a teljes kiadás arányában ábrázoljuk (vagy az alcsoportokat a főcsoportjuk arányában), akkor az oszlopok mindig 100%-ot fognak kiadni, tehát valóban, látványosan összetételről van szó:</p>
 <div class="cell">
 <div class="cell-output-display no-overflow-x">
 <div class="d-flex flex-wrap align-items-end row-gap-2 mb-3" style="column-gap: 1rem">

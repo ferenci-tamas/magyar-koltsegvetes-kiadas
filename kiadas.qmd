@@ -188,6 +188,8 @@ A lenti összehasonlítások a korábban látott magyar vizsgálatok közül min
 
 Mivel a lenti adatok mind a nemzetközi adatszolgáltatásból származnak, így mindegyik eredményszemléletű, mindegyik a tényleges teljesítést (nem a tervezetet) mutatja, és csak a COFOG szerinti bontásban érhető el. Nagyjából egy év időbeli késleltetés lehet az adatokban: a tényleges teljesítés miatt eleve csak a már lezárt évekről lehet adat, de elképzelhető, hogy az utolsó még abból sincs meg.
 
+A nemzetközi vizsgálatok azért nehezebbek, mert két dimenziónk (ország és idő) is van az alapon (kategória) felül, így az összehasonlítási lehetőségek száma is megnő.
+
 Kezdjük elsőként egy egyszerű időbeli vizsgálattal: nézzük meg, hogy egy adott kategóriára költött pénz hogyan alakult a különböző országoknál időben. Az ábrán alapbeállítás szerint Magyarország és a négy nevezetes európai országcsoport jelenik meg, de bármely további ország megjeleníthető, akár több is:
 
 ```{r}
@@ -214,7 +216,7 @@ country_heatmap(
 )
 ```
 
-Adott év adatait ábrázolhatjuk oszlopdiagramon is:
+A másik csapásirány az, ha az idődimenziót nem használjuk -- ehhez egy évre kell szorítkoznunk. Ilyenkor már kényelmesen ábrázolható több, akár az összes ország is, például egy oszlopdiagramon:
 
 ```{r}
 country_chart(
@@ -227,7 +229,7 @@ country_chart(
 )
 ```
 
-Vagy pedig az összetételt:
+Itt is igaz, hogy nagyon jól ábrázolható az összetétel: a fentiek egy kategóriát mutatnak meg, de ábrázolhatjuk akár az összes kategóriát is. Ha ráadásul ezeket a teljes kiadás arányában ábrázoljuk (vagy az alcsoportokat a főcsoportjuk arányában), akkor az oszlopok mindig 100%-ot fognak kiadni, tehát valóban, látványosan összetételről van szó:
 
 ```{r}
 country_stack_chart(
