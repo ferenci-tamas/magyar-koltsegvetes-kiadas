@@ -216,18 +216,19 @@ regression_test <- local({
     }
 
     // What a chart shows, read from ECharts' model rather than from its options, so
-    // that it doesn't depend on how the options are organised (as into datasets): of
-    // each series shown (not switched off in the legend), its name, type and colours,
-    // and of each of its items, its name, its values on the axes (or that its colour
-    // shows), from its row of data if that's an object (from a dataset), else as
-    // ECharts parsed them, and its own colours; the items of each legend, and whether
-    // they're switched on; the titles; the pieces of each visualMap; and the size of
-    // the chart
+    // that it doesn't depend on how the options are organised (as into datasets, or
+    // into series kept empty for later): of each series shown (not switched off in
+    // the legend) with any items, its name, type and colours, and of each of its
+    // items, its name, its values on the axes (or that its colour shows), from its
+    // row of data if that's an object (from a dataset), else as ECharts parsed them,
+    // and its own colours; the items of each legend, and whether they're switched
+    // on; the titles; the pieces of each visualMap; and the size of the chart
     function contentOf(chart) {
       const model = chart.getModel();
       const series = [], legends = [], titles = [], maps = [];
       model.eachSeries(s => {
         const data = s.getData();
+        if (!data.count()) return;
         const dims = ['x', 'y', 'value'].map(d => data.mapDimension(d)).filter(Boolean);
         const style = data.getVisual('style') || {};
         const items = [];

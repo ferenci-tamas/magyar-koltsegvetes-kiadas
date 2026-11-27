@@ -320,7 +320,7 @@ category_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
     add_category_data(ids, data, var, stack, heatmap, base_year)
   chart <- if (heatmap) {
     add_category_heatmap(chart, var, axis_name, row_names, unit_suffix, fraction_digits,
-                         heatmap_sizes, row_scale)
+                         heatmap_sizes, row_scale, data$slots)
   } else {
     add_category_lines(chart, data, var, axis_name, unit_suffix, fraction_digits, stack,
                        relative)
@@ -438,9 +438,10 @@ heatmap_row_names <- function(paths) {
 # rows of the filters (`filter_paths`). Without parts, also the types of data
 # (`types`), each a series of the chart, and the filters are on CategoryPaths.
 # Showing parts (with `parts = TRUE`), the paths of the parts (`paths`, which the
-# filters are on, with "Összesen" first), and the parts themselves (`parts`), each a
-# series of the chart, which the page has in the element of JSON with the id
-# `parts_id`
+# filters are on, with "Összesen" first), the parts themselves (`parts`), which the
+# page has in the element of JSON with the id `parts_id`, and how many parts a whole
+# has at most, of a type of data (`slots`), as the chart draws each part shown in a
+# slot of its own (see add_category_data())
 category_data <- function(var, parts = FALSE, heatmap = FALSE) {
   values <- hu_values(unique(c(unname(var), if (heatmap) "value")))
   years <- sort(unique(HURawData$yearchr))
@@ -475,6 +476,8 @@ category_data <- function(var, parts = FALSE, heatmap = FALSE) {
   )))
   list(values = values, years = years, paths = paths, parts = parts,
        parts_id = parts_json$id,
+       slots = paths[, .(parts = uniqueN(code)), by = .(classification, typeLabel, main)][
+         , max(parts)],
        elements = htmltools::tagList(values$elements, parts_json$element),
        # "Összesen" first in the dropdown
        filter_paths = paths[order(main != "Összesen")])
@@ -513,8 +516,14 @@ hu_values <- function(columns) {
 # js/category.js). Without parts, the rows of the category chosen with the dropdowns
 # (the main group itself if the subgroup dropdown is at "Összesen"), a dataset for
 # each type of data; with parts, those of the parts of the whole chosen, of the type
-# of data chosen, a dataset for each part. Each row has its year (`yearchr`) and its
-# values in the columns `var`, rounded (see round_for_chart()). In stack mode (with
+# of data chosen, each part in a slot of its own. The chart has as many slots as a
+# whole has parts at most (`slots` of category_data()), each with a dataset and its
+# series, and the parts shown take up the first ones, in their order, with the
+# series of each slot named after its part (those of the empty slots after none).
+# That's much faster than a series for every part of every whole, mostly empty, as
+# ECharts goes through all the series whenever anything changes. Each row has its
+# year (`yearchr`) and its values in the columns `var`, rounded (see
+# round_for_chart()). In stack mode (with
 # `stack = TRUE`), each column is split into its negative part, in a column of its
 # name with "_neg" appended, and its positive part, in the column itself, as the two
 # are stacked separately (see add_category_lines()): the negative part is missing
@@ -526,7 +535,7 @@ hu_values <- function(columns) {
 # controls change, the slider keeps its year if the rows have it, else it moves to
 # the nearest year they have. The year is also shown beside the slider, and kept in
 # its data-year attribute, for the title, which add_chart_layout() sets after this.
-# A heatmap (with `heatmap = TRUE`) has a single dataset of the rows of all the parts,
+# A heatmap (with `heatmap = TRUE`) has the rows of all the slots in a single dataset,
 # in the order of the years, each also with the code of its part (`code`) and its
 # spending (`spending`, from the column value), which size the rows of the heatmap.
 # The other parts of the chart learn which rows are shown from kiadas.onFilter(), so
@@ -539,15 +548,15 @@ add_category_data <- function(chart, ids, data, var, stack = FALSE, heatmap = FA
   dimensions <- c("yearchr", if (heatmap) "code", columns,
                   if (stack) paste0(columns, "_neg"), if (heatmap) "spending")
   chart$x$opts$dataset <- rep(list(list(dimensions = as.list(dimensions))),
-                              if (heatmap) 1L else if (parts) nrow(data$parts) else
+                              if (heatmap) 1L else if (parts) data$slots else
                                 length(data$types))
   htmlwidgets::onRender(chart, "kiadas.categoryData",
     data = list(
       rowsId = data$values$rows, valuesIds = data$values$columns,
       columns = as.list(columns), types = if (!parts) as.list(data$types),
-      partsId = data$parts_id, classificationId = ids$classification,
-      typeId = if (parts) ids$type, mainId = ids$main, subId = if (!parts) ids$sub,
-      stack = stack, heatmap = heatmap,
+      partsId = data$parts_id, slots = data$slots,
+      classificationId = ids$classification, typeId = if (parts) ids$type,
+      mainId = ids$main, subId = if (!parts) ids$sub, stack = stack, heatmap = heatmap,
       baseId = if (!is.null(base_year)) ids$base,
       year = if (!is.null(base_year)) as.character(base_year)
     ))
@@ -665,46 +674,51 @@ category_filters <- function(ids, paths, var, var_label, parent_var,
 # plotted at first) or, with `stack = TRUE`, its stacked areas, with
 # `axis_name[[1]]` on the y axis, and a tooltip of the values in the hovered year,
 # followed by `unit_suffix`, with at most `fraction_digits` decimals: a series for
-# each type of data or, showing parts, for each part (see category_data() for
-# `data`), each of the dataset of its rows (see add_category_data()), and named
-# after its type or category. In stack mode, the columns with "_neg" appended to
-# their names have the negative parts
+# each type of data, named after it, or showing parts, for each slot (see
+# add_category_data()), which is named after the part it shows as it's drawn (see
+# category_data() for `data`), each of the dataset of its rows. In stack mode, the
+# columns with "_neg" appended to their names have the negative parts
 add_category_lines <- function(chart, data, var, axis_name, unit_suffix, fraction_digits,
                                stack = FALSE, relative = FALSE) {
   column <- var[[1]]
-  labels <- if (is.null(data$parts)) data$types else as.character(data$parts$nameLabel)
-  series <- \(k, y, ...) list(
-    datasetIndex = k - 1L, encode = list(x = "yearchr", y = y), name = labels[[k]],
-    type = "line", coordinateSystem = "cartesian2d", xAxisIndex = 0L, yAxisIndex = 0L,
-    emphasis = list(focus = "series"), ...
+  parts <- !is.null(data$parts)
+  n <- if (parts) data$slots else length(data$types)
+  # The series of a slot have ids, by which the data hook renames them: ECharts would
+  # merge a renamed series into the one that has its name already, if any, rather than
+  # into the one at its place. In stack mode, "-" ends the id of the series of the
+  # negative part, and "+" that of the positive part
+  series <- \(k, y, sign = "", ...) c(
+    list(datasetIndex = k - 1L, encode = list(x = "yearchr", y = y)),
+    if (parts) list(id = paste0("slot", k - 1L, sign)) else list(name = data$types[[k]]),
+    list(type = "line", coordinateSystem = "cartesian2d", xAxisIndex = 0L,
+         yAxisIndex = 0L, emphasis = list(focus = "series"), ...)
   )
   chart$x$opts$series <- if (stack) {
-    # Each category as two series, of its negative and of its positive parts, each
-    # stacked only on the series of the same sign, so the negative parts go below
-    # 0 and the positive ones above. (ECharts' default would stack a value on the
-    # values of its sign, which draws a category that is negative in a year as an
-    # area diving from its place in the stack to below 0 and back, and stacks a 0
-    # on the negative values if no category before it is positive in that year.)
+    # Each part (in its slot) as two series, of its negative and of its positive
+    # parts, each stacked only on the series of the same sign, so the negative parts
+    # go below 0 and the positive ones above. (ECharts' default would stack a value
+    # on the values of its sign, which draws a category that is negative in a year
+    # as an area diving from its place in the stack to below 0 and back, and stacks a
+    # 0 on the negative values if no category before it is positive in that year.)
     # The series of the negative parts come first, with a symbol only where the
     # part is below 0, not at the zeros around it. triggerLineEvent: hovering an
     # area, not only its points, tells which one it is, for the tooltip
-    c(lapply(seq_along(labels), \(k) series(
-        k, paste0(column, "_neg"), areaStyle = list(), stack = "total",
+    c(lapply(seq_len(n), \(k) series(
+        k, paste0(column, "_neg"), "-", areaStyle = list(), stack = "total",
         stackStrategy = "negative", triggerLineEvent = TRUE,
         symbolSize = htmlwidgets::JS("kiadas.negativeSymbolSize")
       )),
-      lapply(seq_along(labels), \(k) series(
-        k, column, areaStyle = list(), stack = "total", stackStrategy = "positive",
+      lapply(seq_len(n), \(k) series(
+        k, column, "+", areaStyle = list(), stack = "total", stackStrategy = "positive",
         triggerLineEvent = TRUE
       )))
   } else {
     # In relative mode, as above, hovering a line, not only its points, tells which
     # one it is, for the tooltip
-    lapply(seq_along(labels), \(k) series(k, column, triggerLineEvent = relative))
+    lapply(seq_len(n), \(k) series(k, column, triggerLineEvent = relative))
   }
-  # Each name once (a part has two series in stack mode). Showing parts, it only
-  # lists those shown (see add_part_legend())
-  chart$x$opts$legend <- list(data = as.list(unique(labels)))
+  # Showing parts, the legend lists those shown (see add_part_legend())
+  chart$x$opts$legend <- list(data = if (parts) list() else as.list(data$types))
   chart |>
     # On phones, the tooltip is often wider than the room beside the finger, or
     # even than the chart (with the long names of the categories), and ECharts
@@ -736,8 +750,9 @@ add_category_lines <- function(chart, data, var, axis_name, unit_suffix, fractio
 # 1/2, 0.8, 1, 1.25 and 2 (symmetric around 1 on the log scale, as 0.8 = 1/1.25). The
 # columns in `linear` (as differences) are coloured in the same colours on a linear
 # scale symmetric around 0 instead (see restyle() in js/category.js). As the y axis
-# only shows the codes, the legend lists the full names of the rows, `row_names` (by
-# code), and so does the tooltip, with the year and the value of the hovered cell,
+# only shows the codes, the legend lists the full names of the rows shown,
+# `row_names` (by code), of which there are `slots` at most (see the legend below),
+# and so does the tooltip, with the year and the value of the hovered cell,
 # followed by `unit_suffix`, with at most `fraction_digits` decimals or, with
 # `plan_actual` (the names of the plan and the actual spending), with what the
 # tooltip of a plan_actual_chart() shows of a point (see kiadas.planActualTooltip()),
@@ -746,7 +761,7 @@ add_category_lines <- function(chart, data, var, axis_name, unit_suffix, fractio
 # height of a row (`row`) and the least height of the plot (`plot`), in px, as
 # add_chart_layout() lays it out
 add_category_heatmap <- function(chart, var, axis_name, row_names, unit_suffix,
-                                 fraction_digits, sizes, row_scale,
+                                 fraction_digits, sizes, row_scale, slots,
                                  linear = character(), base_weights = TRUE,
                                  weight_label = "Súlya a bázisévben",
                                  plan_actual = NULL) {
@@ -778,12 +793,14 @@ add_category_heatmap <- function(chart, var, axis_name, row_names, unit_suffix,
 
   # A cell for each row of the dataset, set up as a heatmap, but drawn by hand, as a
   # custom series (see renderItem() in js/category.js), as the rows of a heatmap are
-  # all equally tall. The legend lists series without data, one for each name,
-  # without icons, so one name in each line, so that it's clear where one ends and
-  # the next one starts. Its names can be switched off, as ECharts makes the items of
-  # a legend ignore the mouse otherwise, but they're switched back on at once (see
-  # js/category.js)
-  full_names <- unique(unlist(row_names, use.names = FALSE))
+  # all equally tall. The legend lists series without data, without icons, so one
+  # name in each line, so that it's clear where one ends and the next one starts:
+  # one for each row shown, as many as there may be (`slots`), which are named after
+  # the rows by their ids as they're laid out (see relayout() in js/category.js), and
+  # the others after none. (Rather than one for each name, which ECharts would go
+  # through whenever anything changes.) Its names can be switched off, as ECharts makes
+  # the items of a legend ignore the mouse otherwise, but they're switched back on at
+  # once (see js/category.js)
   chart$x$opts$series <- c(
     list(list(
       datasetIndex = 0L, encode = list(x = "yearchr", y = "code", value = var[[1]]),
@@ -793,10 +810,12 @@ add_category_heatmap <- function(chart, var, axis_name, row_names, unit_suffix,
       # Nothing to draw until the rows are laid out
       renderItem = htmlwidgets::JS("function() { return null; }")
     )),
-    lapply(full_names, \(name) list(name = name, type = "line", data = list()))
+    lapply(seq_len(slots), \(k) {
+      list(id = paste0("legend", k - 1L), name = " ", type = "line", data = list())
+    })
   )
-  chart$x$opts$legend <- list(data = as.list(full_names), orient = "vertical",
-                              icon = "none", itemWidth = 0)
+  chart$x$opts$legend <- list(data = list(), orient = "vertical", icon = "none",
+                              itemWidth = 0)
   # Its pieces are set by restyle() (in js/category.js), before any cell is drawn
   chart$x$opts$visualMap <- list(list(
     type = "piecewise", show = FALSE, seriesIndex = 0, dimension = var[[1]]
@@ -822,7 +841,7 @@ add_category_heatmap <- function(chart, var, axis_name, row_names, unit_suffix,
     # at the 0 of the y axis, which is at the top)
     e_x_axis(axisLine = list(show = FALSE, onZero = FALSE)) |>
     htmlwidgets::onRender("kiadas.categoryHeatmap",
-      data = list(codes = as.list(names(row_names)), names = row_names,
+      data = list(codes = as.list(names(row_names)), names = row_names, slots = slots,
                   unit = unit_suffix, digits = fraction_digits, scale = scale,
                   sizes = sizes, rowScale = row_scale, colors = as.list(color_at(middles)),
                   columns = as.list(unname(var)), linear = as.list(linear),
@@ -928,10 +947,10 @@ chart_palette <- c("#5070dd", "#b6d634", "#505372", "#ff994d", "#0ca8df", "#ffd1
                    "#ab2965", "#167a4e", "#ae9d69", "#027588")
 
 # Colours the series of a chart of parts (a category_chart() showing parts, or a
-# plan_actual_chart(), whose parts are its categories). As the chart has a series for
-# every part of every whole (in stack mode, two), each of the dataset of the part's
-# rows (see add_category_data() and add_plan_actual_data()), the legend only lists
-# the parts shown, those with rows, coloured as if they were the only ones (from the
+# plan_actual_chart(), whose parts are its categories), each of the dataset of a part
+# (in stack mode, two series), or of a slot that shows one (see add_category_data()
+# and add_plan_actual_data()), and named after the part. The legend only lists the
+# parts shown, those with rows, coloured as if they were the only ones (from the
 # start, and whenever the rows shown change). Series added after this (as the line
 # of a plan_actual_chart()) are left out of the legend, and keep their own colours
 add_part_legend <- function(chart) {
@@ -1070,20 +1089,20 @@ plan_actual_chart <- function(axis_name, unit, title = NULL, var = "value",
   scales <- c(linear = "Lineáris", log = "Logaritmikus")
   data <- plan_actual_data(var)
   unit_suffix <- unit_suffix_for(unit)
-  labels <- as.character(data$categories$nameLabel)
 
-  # A series for each category, of the dataset of its points (see
-  # add_plan_actual_data()), in the order of the years, so that the downloaded data
-  # and the description list them so. The legend lists the categories shown (see
-  # add_part_legend())
+  # A series for each slot (see add_plan_actual_data()), of the dataset of the points
+  # of the category in it, in the order of the years, so that the downloaded data and
+  # the description list them so. They have ids, by which the data hook names them
+  # after their categories (see add_category_lines()). The legend lists the
+  # categories shown (see add_part_legend())
   chart <- data_chart(ids$chart)
   chart$x$opts$xAxis <- list(list(type = "value"))
-  chart$x$opts$series <- lapply(seq_along(labels), \(k) list(
+  chart$x$opts$series <- lapply(seq_len(data$slots), \(k) list(
     datasetIndex = k - 1L, encode = list(x = "plan", y = "actual", itemId = "key"),
-    name = labels[[k]], type = "scatter", coordinateSystem = "cartesian2d",
+    id = paste0("slot", k - 1L), type = "scatter", coordinateSystem = "cartesian2d",
     xAxisIndex = 0L, yAxisIndex = 0L, symbolSize = 8, emphasis = list(focus = "series")
   ))
-  chart$x$opts$legend <- list(data = as.list(labels))
+  chart$x$opts$legend <- list(data = list())
   chart <- chart |>
     add_plan_actual_data(ids, data, points = TRUE, log_value = scales[["log"]]) |>
     # Before the line is added (see add_plan_actual_axes()), which isn't a category
@@ -1132,16 +1151,18 @@ plan_actual_chart <- function(axis_name, unit, title = NULL, var = "value",
 # "Összesen" for the main groups), their `nameLabel` and `code`; the `years` from
 # the first to the last with both for any category, and those with both for some
 # category (`point_years`); in an element of JSON (`element`, with the id
-# `values_id`), those `years`, the `codes` of the categories, and for each category,
-# in each of those years (null where it's missing), its plan (`plan`), its actual
-# value (`actual`), their ratio (`ratio`, missing where the plan isn't positive) and
-# difference (`difference`), rounded as in round_for_chart(), and the plan's share of
-# all the planned spending of its year (`spending`, in %), which weights the rows of
-# a plan_actual_heatmap(); and `choices`, a row for each choice of the main group
-# dropdown (`main`) and each category it shows (by its position in `categories`,
-# from 0: `k`), and the same as a list of the positions by choice (`shown`).
-# "Összesen" shows the main groups, and a main group its subgroups or, if it has
-# none, itself
+# `values_id`), those `years`, the `codes` and the `labels` (their nameLabel) of the
+# categories, and for each category, in each of those years (null where it's
+# missing), its plan (`plan`), its actual value (`actual`), their ratio (`ratio`,
+# missing where the plan isn't positive) and difference (`difference`), rounded as
+# in round_for_chart(), and the plan's share of all the planned spending of its year
+# (`spending`, in %), which weights the rows of a plan_actual_heatmap(); `choices`, a
+# row for each choice of the main group dropdown (`main`) and each category it shows
+# (by its position in `categories`, from 0: `k`), and the same as a list of the
+# positions by choice (`shown`); and the most categories a choice shows (`slots`),
+# as the charts draw each in a slot of its own (see add_plan_actual_data() and
+# add_category_heatmap()). "Összesen" shows the main groups, and a main group its
+# subgroups or, if it has none, itself
 plan_actual_data <- function(var) {
   types <- c(original_plan = "plan", actual = "actual")
   long <- CategoryPaths[
@@ -1174,7 +1195,8 @@ plan_actual_data <- function(var) {
     unname(split(points[[column]], factor(points$code, levels = categories$code)))
   }
   values <- shared_json(jsonlite::toJSON(
-    list(years = years, codes = categories$code, plan = by_category("plan"),
+    list(years = years, codes = categories$code,
+         labels = as.character(categories$nameLabel), plan = by_category("plan"),
          actual = by_category("actual"), ratio = by_category("ratio"),
          difference = by_category("difference"), spending = by_category("spending")),
     na = "null", digits = 16, use_signif = TRUE
@@ -1188,7 +1210,8 @@ plan_actual_data <- function(var) {
   )[order(main != "Összesen", code)]
   list(categories = categories, years = years, point_years = sort(unique(both$yearchr)),
        values_id = values$id, element = values$element, choices = choices,
-       shown = lapply(split(choices$k, choices$main), as.list))
+       shown = lapply(split(choices$k, choices$main), as.list),
+       slots = max(table(choices$main)))
 }
 
 # Draws a plan_actual_chart() or a plan_actual_heatmap() (see there), with the ids
@@ -1196,27 +1219,33 @@ plan_actual_data <- function(var) {
 # categories that the main group dropdown shows: at first, and again whenever its
 # controls change, in the browser (see kiadas.planActualData() in js/plan-actual.js).
 # With `points = TRUE`, as in a plan_actual_chart(), the rows of each category are a
-# dataset: those with both a plan (`plan`) and an actual value (`actual`) and, while
-# the radio buttons of the axes are at `log_value`, only those with positive ones,
-# which log axes can show; each with its year (`yearchr`) and a `key`, by which
-# ECharts pairs the points before and after a change as it animates it (by default
-# it would pair them by their order, so that when some leave, as when a year is
-# switched off in the legend, the others would slide into their places). The points
-# of the years switched off in the legend of the years are left out (see
+# dataset, in a slot of its own, as the parts of a category_chart() (see
+# add_category_data()): the chart has as many slots as the dropdown shows categories
+# at most (`slots` of plan_actual_data()), and the categories with rows take up the
+# first ones, in their order, with the series of each slot named after its category.
+# The rows of a category are those with both a plan (`plan`) and an actual value
+# (`actual`) and, while the radio buttons of the axes are at `log_value`, only those
+# with positive ones, which log axes can show; each with its year (`yearchr`) and a
+# `key`, by which ECharts pairs the points before and after a change as it animates
+# it (by default it would pair them by their order, so that when some leave, as when
+# a year is switched off in the legend, the others would slide into their places).
+# The points of the years switched off in the legend of the years are left out (see
 # add_plan_actual_colors()). Otherwise, as in a plan_actual_heatmap(), all the rows
-# of the categories shown are a single dataset, in the order of the years, each of a
-# cell, with the category's `code`, and the `ratio`, the `difference` and the
-# `spending` of plan_actual_data(). The other parts of the chart learn which rows are
+# of the categories shown are a single dataset, in the order of the years (each
+# year's rows in the order of the categories), each of a cell, with the category's
+# `code`, and the `ratio`, the `difference` and the `spending` of plan_actual_data().
+# The other parts of the chart learn which rows are
 # shown from kiadas.onFilter(), so this comes before them. (echarts4r doesn't draw
 # the chart, so that it's first drawn with its data)
 add_plan_actual_data <- function(chart, ids, data, points = FALSE, log_value = NULL) {
   dimensions <- if (points) c("yearchr", "plan", "actual", "key") else
     c("yearchr", "code", "ratio", "difference", "plan", "actual", "spending")
   chart$x$opts$dataset <- rep(list(list(dimensions = as.list(dimensions))),
-                              if (points) nrow(data$categories) else 1L)
+                              if (points) data$slots else 1L)
   htmlwidgets::onRender(chart, "kiadas.planActualData",
-    data = list(valuesId = data$values_id, choices = data$shown, mainId = ids$main,
-                scaleId = if (points) ids$scale, logValue = log_value, points = points))
+    data = list(valuesId = data$values_id, choices = data$shown, slots = data$slots,
+                mainId = ids$main, scaleId = if (points) ids$scale, logValue = log_value,
+                points = points))
 }
 
 # The filters of a plan_actual_chart() or a plan_actual_heatmap() (see there),
@@ -1277,10 +1306,11 @@ add_plan_actual_axes <- function(chart, y_name, type_labels, unit_suffix, ids,
   chart$x$opts$yAxis[[1]] <- modifyList(chart$x$opts$yAxis[[1]],
                                         c(axis, list(name = y_name)))
   # Under the points, left out of the tooltip, and drawn once the range is known
-  # (see js/plan-actual.js)
+  # (see js/plan-actual.js). Its colour is its own, not ECharts' colour of its place
+  # among the series
   chart$x$opts$series <- c(chart$x$opts$series, list(list(
     id = "diagonal", type = "line", data = list(), symbol = "none", silent = TRUE,
-    z = 1, lineStyle = list(type = "dashed", color = "#888", width = 1)
+    z = 1, color = "#888", lineStyle = list(type = "dashed", width = 1)
   )))
 
   chart |>
@@ -1366,7 +1396,7 @@ plan_actual_heatmap <- function(axis_name, unit, title = NULL, var = "value",
     # Its tooltip gives the plan and the actual value, with at most one decimal, as
     # that of plan_actual_chart()
     add_category_heatmap(columns, axis_name, row_names, unit_suffix_for(unit), 1L,
-                         heatmap_sizes, row_scale,
+                         heatmap_sizes, row_scale, data$slots,
                          linear = intersect(columns, "difference"), base_weights = FALSE,
                          weight_label = "Átlagos súlya a tervekben",
                          plan_actual = plan_actual_labels) |>

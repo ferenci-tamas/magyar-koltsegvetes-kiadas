@@ -46,12 +46,14 @@ window.kiadas = (function() {
       observer.observe(el);
     },
     // Tells the parts of the chart `el` what its controls leave of its data: `view`,
-    // with the rows of each of its groups (each part, type of data or category, in
-    // the order of its datasets), `groups`, all of them in that order, `rows`, and in
-    // relative mode the base year, `baseYear` (else null). The chart's data hook,
-    // kiadas.categoryData() or kiadas.planActualData(), calls this whenever they
-    // change, once it has drawn them. The rows are those of the data, not divided by
-    // the base year, nor without the years switched off in a legend
+    // with the rows of each of its groups (each slot of a part, type of data or
+    // category, in the order of its datasets), `groups`, their names (the parts',
+    // types' or categories', null for an empty slot), `names`, all the rows in that
+    // order, `rows`, and in relative mode the base year, `baseYear` (else null). The
+    // chart's data hook, kiadas.categoryData() or kiadas.planActualData(), calls
+    // this whenever they change, once it has drawn them. The rows are those of the
+    // data, not divided by the base year, nor without the years switched off in a
+    // legend
     showView: function(el, view) {
       views.set(el, view);
       el.dispatchEvent(new CustomEvent('filter', { detail: view }));

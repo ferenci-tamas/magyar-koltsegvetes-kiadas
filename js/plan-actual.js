@@ -13,9 +13,10 @@ kiadas.planActualData = function(el, x, data) {
   var values = kiadas.json(data.valuesId);
   var main = document.getElementById(data.mainId);
   var scale = data.scaleId ? document.getElementById(data.scaleId) : null;
-  // The rows of each category shown, the choices of the controls they're for, and
-  // the years switched off in the legend (see planActualColors())
-  var groups = [], drawn = null, hidden = new Set();
+  // The rows of each slot, and the name of the category in it (see filter()), the
+  // choices of the controls they're for, and the years switched off in the legend
+  // (see planActualColors())
+  var groups = [], names = [], drawn = null, hidden = new Set();
 
   // The current choices of the main group dropdown and of the radio buttons of the
   // axes (if any)
@@ -26,12 +27,16 @@ kiadas.planActualData = function(el, x, data) {
   // The rows of each category that the main group dropdown shows, each an object
   // of its year (yearchr) and its values: of a scatter plot, those with both a plan
   // and an actual value (on log axes, with positive ones), with a key that tells
-  // the points apart; of a heatmap, all of them, with the category's code
+  // the points apart; of a heatmap, all of them, with the category's code. Each
+  // category with rows in a slot of its own (see add_plan_actual_data()), from the
+  // first, in their order, with the names of the categories in the slots (null for
+  // an empty slot)
   function filter(chosen) {
-    var shown = new Set(data.choices[chosen[0]] || []), log = chosen[1] === data.logValue;
-    groups = values.codes.map(function(code, k) {
-      var rows = [];
-      if (!shown.has(k)) return rows;
+    var log = chosen[1] === data.logValue;
+    groups = [];
+    names = [];
+    (data.choices[chosen[0]] || []).forEach(function(k) {
+      var code = values.codes[k], rows = [];
       values.years.forEach(function(year, j) {
         var plan = values.plan[k][j], actual = values.actual[k][j];
         if (!data.points) {
@@ -43,15 +48,23 @@ kiadas.planActualData = function(el, x, data) {
                       key: k * values.years.length + j });
         }
       });
-      return rows;
+      if (!rows.length) return;
+      groups.push(rows);
+      names.push(values.labels[k]);
     });
+    while (groups.length < data.slots) {
+      groups.push([]);
+      names.push(null);
+    }
   }
 
-  // Draws the rows shown: of a scatter plot, those of each category as a dataset,
-  // without the years switched off in the legend; of a heatmap, all of them as one,
-  // in the order of the years (each year's rows in the order of the categories).
-  // The first time with all the options of the chart, which echarts4r hasn't drawn
-  // (see add_plan_actual_data()), and later lazily, as the other parts of the chart
+  // Draws the rows shown: of a scatter plot, those of each slot as a dataset,
+  // without the years switched off in the legend, with the series of the slot named
+  // after its category, and those of the empty slots after none, by their ids (see
+  // kiadas.categoryData()); of a heatmap, all of them as one, in the order of the
+  // years (each year's rows in the order of the categories). The first time with all
+  // the options of the chart, which echarts4r hasn't drawn (see
+  // add_plan_actual_data()), and later lazily, as the other parts of the chart
   // change it too (see kiadas.onFilter())
   function draw(first) {
     var sets = data.points ?
@@ -61,13 +74,23 @@ kiadas.planActualData = function(el, x, data) {
       [[].concat.apply([], groups).sort(function(a, b) {
         return a.yearchr < b.yearchr ? -1 : a.yearchr > b.yearchr ? 1 : 0;
       })];
-    var dataset = sets.map(function(rows, k) {
-      return first ? Object.assign({}, x.opts.dataset[k], { source: rows }) : { source: rows };
-    });
+    var option = {
+      dataset: sets.map(function(rows, k) {
+        return first ? Object.assign({}, x.opts.dataset[k], { source: rows }) : { source: rows };
+      })
+    };
+    if (data.points) {
+      // The first time all the series, then only those of the slots
+      option.series = x.opts.series.map(function(s) {
+        if (s.datasetIndex == null) return first ? s : null;
+        var name = { id: s.id, name: names[s.datasetIndex] || ' ' };
+        return first ? Object.assign({}, s, name) : name;
+      }).filter(Boolean);
+    }
     if (first) {
-      chart.setOption(Object.assign({}, x.opts, { dataset: dataset }));
+      chart.setOption(Object.assign({}, x.opts, option));
     } else {
-      chart.setOption({ dataset: dataset }, { lazyUpdate: true });
+      chart.setOption(option, { lazyUpdate: true });
     }
   }
 
@@ -80,8 +103,8 @@ kiadas.planActualData = function(el, x, data) {
     if (!first) kiadas.hideTip(chart);
     filter(chosen);
     draw(first);
-    kiadas.showView(el, { groups: groups, rows: [].concat.apply([], groups),
-                          baseYear: null });
+    kiadas.showView(el, { groups: groups, names: names,
+                          rows: [].concat.apply([], groups), baseYear: null });
   }
   update(true);
   main.addEventListener('change', function() { update(false); });

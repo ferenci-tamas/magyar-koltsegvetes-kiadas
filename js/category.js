@@ -22,9 +22,10 @@ kiadas.categoryData = function(el, x, data) {
   // In relative mode, the slider of the base year, and the year shown beside it
   var slider = control(data.baseId), output = control(data.baseId && data.baseId + '_value');
   var years = x.opts.xAxis[0].data;
-  // The rows of each part shown (or of each type of data), the choices of the
-  // controls they're for, the years that the slider offers, and the base year
-  var groups = [], drawn = null, offered = years, year = data.year;
+  // The rows of each slot, and the name of the part in it (see filter()), the
+  // choices of the controls they're for, the years that the slider offers, and the
+  // base year
+  var groups = [], names = [], drawn = null, offered = years, year = data.year;
 
   // The value of the checked radio button of `fieldset`
   function checked(fieldset) {
@@ -66,15 +67,30 @@ kiadas.categoryData = function(el, x, data) {
       [sub.value === 'Összesen' ? main.value : sub.value];
   }
 
-  // The rows of each part of the whole chosen (of the type chosen) or, without
-  // parts, of each type of data of the category chosen
+  // The rows of the parts of the whole chosen (of the type chosen) that have any,
+  // each in a slot of its own (see add_category_data()), from the first, in their
+  // order, and the names of the parts in the slots (null for an empty slot) or,
+  // without parts, the rows of each type of data of the category chosen, and the
+  // names of the types
   function filter(chosen) {
-    groups = parts ?
-      parts.category.map(function(category, k) {
-        return parts.classification[k] === chosen[0] && parts.main[k] === chosen[2] ?
-          rowsOf(category, chosen[1], parts.code[k]) : [];
-      }) :
-      data.types.map(function(typeLabel) { return rowsOf(chosen[0], typeLabel); });
+    if (!parts) {
+      groups = data.types.map(function(typeLabel) { return rowsOf(chosen[0], typeLabel); });
+      names = data.types;
+      return;
+    }
+    groups = [];
+    names = [];
+    parts.category.forEach(function(category, k) {
+      if (parts.classification[k] !== chosen[0] || parts.main[k] !== chosen[2]) return;
+      var rows = rowsOf(category, chosen[1], parts.code[k]);
+      if (!rows.length) return;
+      groups.push(rows);
+      names.push(category);
+    });
+    while (groups.length < data.slots) {
+      groups.push([]);
+      names.push(null);
+    }
   }
 
   // Takes the year at the slider as the base year, and shows it beside the slider,
@@ -139,12 +155,21 @@ kiadas.categoryData = function(el, x, data) {
     var dataset = sets.map(function(rows, k) {
       return first ? Object.assign({}, x.opts.dataset[k], { source: rows }) : { source: rows };
     });
+    // Showing parts as lines or stacked areas, the series of each slot are named
+    // after its part, and those of the empty slots after none (a space, as ECharts
+    // would make up a name for a series without one), by their ids (see
+    // add_category_lines())
+    var series = parts && !data.heatmap && x.opts.series.map(function(s) {
+      var name = { id: s.id, name: names[s.datasetIndex] || ' ' };
+      return first ? Object.assign({}, s, name) : name;
+    });
+    var option = series ? { dataset: dataset, series: series } : { dataset: dataset };
     if (first) {
-      chart.setOption(Object.assign({}, x.opts, { dataset: dataset }));
+      chart.setOption(Object.assign({}, x.opts, option));
     } else {
-      chart.setOption({ dataset: dataset }, { lazyUpdate: true });
+      chart.setOption(option, { lazyUpdate: true });
     }
-    kiadas.showView(el, { groups: groups, rows: [].concat.apply([], groups),
+    kiadas.showView(el, { groups: groups, names: names, rows: [].concat.apply([], groups),
                           baseYear: slider ? year : null });
   }
 
@@ -247,7 +272,8 @@ kiadas.categoryHeatmap = function(el, x, data) {
   // data.rowScale 'sqrt', to the weight's square root, but at
   // least 2px, so that it stays visible. Labels them with their codes, from the
   // largest, wherever a label stays 13px clear of the others, and lists their
-  // names in the legend. With `lazy`, with ECharts' lazyUpdate (see
+  // names in the legend, as the names of its series without data (see
+  // add_category_heatmap()). With `lazy`, with ECharts' lazyUpdate (see
   // kiadas.onFilter())
   function relayout(lazy) {
     var weights = {};
@@ -295,14 +321,22 @@ kiadas.categoryHeatmap = function(el, x, data) {
         });
         if (clear) labels.set(middle, code);
       });
+    var legend = codes.map(function(code) { return data.names[code]; });
+    // The series without data that give the legend its names, each named after a
+    // row shown, in their order, and the others after none, by their ids (as
+    // ECharts would merge a renamed series into the one with its name already)
+    var legendSeries = [];
+    for (var i = 0; i < data.slots; i++) {
+      legendSeries.push({ id: 'legend' + i, name: legend[i] || ' ' });
+    }
     chart.setOption({
-      legend: { data: codes.map(function(code) { return data.names[code]; }) },
+      legend: { data: legend },
       yAxis: { axisLabel: {
         customValues: Array.from(labels.keys()).sort(function(a, b) { return a - b; }),
         formatter: function(value) { return labels.get(value) || ''; }
       } },
       // Redrawn in the new layout
-      series: [{ id: 'heatmap', renderItem: renderItem }]
+      series: [{ id: 'heatmap', renderItem: renderItem }].concat(legendSeries)
     }, { lazyUpdate: !!lazy });
   }
 
@@ -464,11 +498,16 @@ kiadas.partLines = function(el, x, data) {
 kiadas.partLegend = function(el, x, data) {
   var chart = echarts.getInstanceByDom(el);
   var option = chart.getOption(), palette = option.color;
-  var names = option.series.map(function(s) { return s.name; });
 
   kiadas.onFilter(el, function(view, lazy) {
+    // The name of each series: that of the part whose dataset it plots (in a slot,
+    // the part that its data hook put there), else its own
+    var names = option.series.map(function(s, i) {
+      var k = data.datasets[i];
+      return k != null ? view.names[k] : s.name;
+    });
     // The series whose dataset has rows, each name once, as in stack mode a
-    // category has a series for its negative and one for its positive parts
+    // part has a series for its negative and one for its positive parts
     var legend = [];
     names.forEach(function(name, i) {
       var k = data.datasets[i];
@@ -482,8 +521,7 @@ kiadas.partLegend = function(el, x, data) {
       // Stacked, in the order of the areas from the top of the stack down
       // (though coloured from the bottom up)
       legend: { data: option.series[0].stack ? legend.slice().reverse() : legend },
-      // Also the series of the same category in the other classification,
-      // as the legend takes the colour of the first series of a name
+      // By name, so in stack mode both series of a part
       series: names.map(function(name) {
         return color[name] ? { color: color[name] } : {};
       })
