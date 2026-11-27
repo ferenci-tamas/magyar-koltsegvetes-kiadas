@@ -7,9 +7,11 @@ library(echarts4r)
 
 # aggregates.R
 source("aggregates.R", local = knitr::knit_global())
+# countries.R: the countries of the international comparisons, and their groups
+source("countries.R", local = knitr::knit_global())
 
 # data_prepare.R: the data of every country, by `geo`, and the averages of the
-# groups of countries in prop and propgdp (see group_names in charts.R)
+# groups of countries in prop, propgdp and propParent (see countries.R)
 RawData <- readRDS("koltsegvetes-funkcionalis-kiadas.rds")
 # Hungary's rows, which all the charts below show (and refer to by their numbers
 # in this table, as CategoryPaths does)
@@ -180,7 +182,7 @@ A fentiekben legtöbbször időbeli összehasonlításokról beszéltem (ugyanaz
 
 A bökkenő az, hogy míg a múltbeli adat egy egyértelműen meghatározott érték (még ha az interpretációja nem is minden problémától mentes, mint láttuk), addig az, hogy mit nevezünk "ideális", "elég jó", "elvárható" értéknek, egy sokkal-sokkal képlékenyebb dolog. A gyakorlatban sokszor más országokhoz viszonyítanak; ez persze azt a háttérfeltételezést jelenti, hogy ők "ideálisan", "elég jól", "elvárhatóan" költenek (például) egészségügyre. Gyakori, hogy pont emiatt Nyugat-Európa a viszonyítási alap (mondván, hogy ők jelentik a fejlett országcsoportot). Néha viszont éppen a környező országokhoz szokás viszonyítani, ebben is van racionalitás, mert lehet arra hivatkozni, hogy ez kiszűri a kormány által -- pláne rövid távon -- nehezen befolyásolható, múltból örökölt tényezőket. Akárhogy is, látni kell, hogy ha egy ilyen elemzéshez összehasonlítási alapot képező országot vagy országokat választunk, akkor azzal egyúttal kérdést is választunk, amire válaszolni fogunk.
 
-Erre tekintettel a lenti ábrák az egyes országok egyedi adatain túl tartalmazzák a legkézenfekvőbb országcsoportok adatait is: az egész európai uniót (EU27), a régi nyugati tagállamokat (EU15), az újonnan csatlakozott keletieket (EU11) és a visegrádi négyeket (V4).
+Erre tekintettel a lenti ábrák az egyes országok egyedi adatain túl tartalmazzák a legkézenfekvőbb országcsoportok adatait is: az egész Európai Uniót (EU27), a régi nyugati tagállamokat (EU15), az újonnan csatlakozott keletieket (EU11) és a visegrádi négyeket (V4).
 
 Az összehasonlításnál természetesen fontos, hogy ne legyünk egyoldalúak: ha azt mondjuk, hogy "a fejlett államok többet költenek egészségügyre!", akkor tegyük azt is hozzá: mire költenek kevesebbet? Megint csak, az arányok az izgalmasak, nem az abszolút számok.
 
