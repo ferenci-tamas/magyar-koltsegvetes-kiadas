@@ -65,6 +65,17 @@ window.kiadas = (function() {
       if (views.has(el)) fn(views.get(el), false);
       el.addEventListener('filter', function(e) { fn(e.detail, true); });
     },
+    // Hides the tooltip and the axis pointer of `chart`, and ends any highlighting
+    // of its points, as the mouse leaving the chart does. Called whenever its
+    // controls change what it shows, before it changes: on touch screens, nothing
+    // leaves the chart, so the tooltip of the point last tapped would stay, showing
+    // what was there before, and so would the highlighting (which ECharts even keeps
+    // on the points it reuses for the new data, if the axis pointer is shown)
+    hideTip: function(chart) {
+      chart.dispatchAction({ type: 'hideTip' });
+      chart.dispatchAction({ type: 'updateAxisPointer', currTrigger: 'leave' });
+      chart.dispatchAction({ type: 'downplay' });
+    },
     // The size of the symbols of the series of the negative parts of a stack (see
     // add_category_lines() in charts.R): 4 where the part is below 0, else 0 (as at
     // the zeros around it). `value` is the point's row of data

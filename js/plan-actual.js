@@ -71,11 +71,13 @@ kiadas.planActualData = function(el, x, data) {
     }
   }
 
-  // Whenever the controls change, unless the rows they choose stay the same
+  // Whenever the controls change, unless the rows they choose stay the same, first
+  // hiding the tooltip (see kiadas.hideTip())
   function update(first) {
     var chosen = choices(), key = JSON.stringify(chosen);
     if (key === drawn) return;
     drawn = key;
+    if (!first) kiadas.hideTip(chart);
     filter(chosen);
     draw(first);
     kiadas.showView(el, { groups: groups, rows: [].concat.apply([], groups),
@@ -230,7 +232,11 @@ kiadas.planActualColors = function(el, x, data) {
     legend = chart.getOption().legend[0].data;
     update(lazy);
   });
-  choice.addEventListener('change', function() { update(false); });
+  // The tooltip would show the colour before (see kiadas.hideTip())
+  choice.addEventListener('change', function() {
+    kiadas.hideTip(chart);
+    update(false);
+  });
 
   // Highlights the points of `year` and fades the others (or with `type`
   // 'downplay', ends that): highlighting the year's series fades all the points

@@ -150,11 +150,12 @@ kiadas.categoryData = function(el, x, data) {
 
   // Whenever the controls change, unless the rows they choose stay the same (as
   // when a change is passed on to the controls that depend on it, one after the
-  // other)
+  // other), first hiding the tooltip (see kiadas.hideTip())
   function update(first) {
     var chosen = choices(), key = JSON.stringify(chosen);
     if (key === drawn) return;
     drawn = key;
+    if (!first) kiadas.hideTip(chart);
     filter(chosen);
     if (slider) offer();
     draw(first);
@@ -168,7 +169,9 @@ kiadas.categoryData = function(el, x, data) {
     slider.addEventListener('input', function() {
       var before = year;
       choose();
-      if (year !== before) draw(false);
+      if (year === before) return;
+      kiadas.hideTip(chart);
+      draw(false);
     });
   }
 };

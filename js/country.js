@@ -14,8 +14,9 @@ kiadas.countryBars = function(el, x, data) {
   var choice = data.columnId && document.getElementById(data.columnId);
   var slider = document.getElementById(data.yearId);
   var output = document.getElementById(data.yearId + '_value');
-  // The chosen year, and the years offered
-  var year = data.year, offered = [];
+  // The chosen year, the years offered, and whether the bars have been drawn at
+  // first (after which a new year means that the controls changed it)
+  var year = data.year, offered = [], ready = false;
 
   // The label of the chosen category
   function category() { return sub.value === 'Összesen' ? main.value : sub.value; }
@@ -27,7 +28,9 @@ kiadas.countryBars = function(el, x, data) {
     return kiadas.json(data.valuesId)[category()][column()];
   }
 
+  // After hiding the tooltip (see kiadas.hideTip())
   slider.addEventListener('input', function() {
+    if (ready) kiadas.hideTip(chart);
     year = offered[slider.value];
     output.textContent = year;
     slider.setAttribute('aria-valuetext', year);
@@ -76,6 +79,7 @@ kiadas.countryBars = function(el, x, data) {
   sub.addEventListener('change', offer);
   if (choice) choice.addEventListener('change', offer);
   offer();
+  ready = true;
 };
 
 // The render hook of add_country_lines()
@@ -109,9 +113,13 @@ kiadas.countryLines = function(el, x, data) {
     });
   }
   // The subgroup dropdown also changes whenever the main group does (see
-  // country_filters())
-  sub.addEventListener('change', update);
-  if (choice) choice.addEventListener('change', update);
+  // country_filters()). After hiding the tooltip (see kiadas.hideTip())
+  function change() {
+    kiadas.hideTip(chart);
+    update();
+  }
+  sub.addEventListener('change', change);
+  if (choice) choice.addEventListener('change', change);
   update();
 
   // The colours of the lines shown, by name (see add_country_lines()): given out
@@ -256,9 +264,13 @@ kiadas.countryHeatmap = function(el, x, data) {
     drawScale(colors.ticks);
   }
   // The subgroup dropdown also changes whenever the main group does (see
-  // country_filters())
-  sub.addEventListener('change', update);
-  if (choice) choice.addEventListener('change', update);
+  // country_filters()). After hiding the tooltip (see kiadas.hideTip())
+  function change() {
+    kiadas.hideTip(chart);
+    update();
+  }
+  sub.addEventListener('change', change);
+  if (choice) choice.addEventListener('change', change);
   update();
 };
 
@@ -271,8 +283,10 @@ kiadas.countryStacks = function(el, x, data) {
   var output = document.getElementById(data.yearId + '_value');
   var option = chart.getOption();
   // The chosen year, the years offered, the names of the countries with a
-  // column, and whether each country is switched on in the legend (by name)
-  var year = data.year, offered = [], drawn = [], on = {};
+  // column, whether each country is switched on in the legend (by name), and
+  // whether the columns have been drawn at first (after which a new year means
+  // that the controls or the legend changed it)
+  var year = data.year, offered = [], drawn = [], on = {}, ready = false;
   var selected = option.legend[1].selected || {};
   data.countries.forEach(function(name) { on[name] = selected[name] !== false; });
 
@@ -333,7 +347,9 @@ kiadas.countryStacks = function(el, x, data) {
     });
   }
 
+  // After hiding the tooltip (see kiadas.hideTip())
   slider.addEventListener('input', function() {
+    if (ready) kiadas.hideTip(chart);
     year = offered[slider.value];
     output.textContent = year;
     slider.setAttribute('aria-valuetext', year);
@@ -395,6 +411,7 @@ kiadas.countryStacks = function(el, x, data) {
     chart.setOption({ xAxis: { axisLabel: { rotate: rotation(drawn) } } });
   });
   offer();
+  ready = true;
 
   var format = new Intl.NumberFormat('hu-HU', {
     maximumFractionDigits: data.digits, maximumSignificantDigits: 2,

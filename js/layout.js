@@ -99,9 +99,11 @@ kiadas.columnChoice = function(el, x, data) {
   // The column chosen with the buttons, kept while it isn't offered
   var chosen = choice.querySelector('input:checked').value;
 
-  // At first, and then with ECharts' lazyUpdate (`lazy`), as the main group
-  // dropdown also changes the data (see kiadas.onFilter())
-  function update(lazy) {
+  // At first, and then on each change (`changed`), after hiding the tooltip (see
+  // kiadas.hideTip()), with ECharts' lazyUpdate, as the main group dropdown also
+  // changes the data (see kiadas.onFilter())
+  function update(changed) {
+    if (changed) kiadas.hideTip(chart);
     var whole = !!main && (!main.value || main.value === 'Összesen');
     var offered = inputs.filter(function(input) {
       var shown = !whole || data.parentColumns.indexOf(input.value) < 0;
@@ -127,10 +129,10 @@ kiadas.columnChoice = function(el, x, data) {
         return { encode: { y: negative ? column + '_neg' : column } };
       });
     }
-    chart.setOption(options, { lazyUpdate: lazy });
+    chart.setOption(options, { lazyUpdate: changed });
     // For a heatmap, which colours its cells by the column (see
     // add_category_heatmap())
-    el.dispatchEvent(new CustomEvent('column', { detail: { column: column, lazy: lazy } }));
+    el.dispatchEvent(new CustomEvent('column', { detail: { column: column, lazy: changed } }));
   }
 
   choice.addEventListener('change', function() {

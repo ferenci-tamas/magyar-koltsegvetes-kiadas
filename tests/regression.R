@@ -561,9 +561,11 @@ regression_test <- local({
     if (!is.null(kept)) cat("The rendered pages are in ", kept, "\n", sep = "")
   }
 
-  # The test: see the top of this file. `page` is the page compared, `wait` the time
-  # waited after each interaction (in ms), and `out_dir` the folder of the files of
-  # the test, deleted at the end unless `keep` is TRUE. With `strict = FALSE`, the
+  # The test: see the top of this file. `baseline` may also be the HTML file of the
+  # page rendered earlier, with the site_libs folder of its site beside it (as to
+  # compare with changes not committed yet). `page` is the page compared, `wait` the
+  # time waited after each interaction (in ms), and `out_dir` the folder of the files
+  # of the test, deleted at the end unless `keep` is TRUE. With `strict = FALSE`, the
   # options of the charts may differ, as long as the charts show the same (as when
   # their data are organised differently): the options are then compared for
   # information only. Returns the results invisibly: `pass`, whether the two work the
@@ -580,9 +582,13 @@ regression_test <- local({
     out_dir <- normalizePath(out_dir, winslash = "/")
     if (!keep) on.exit(unlink(out_dir, recursive = TRUE), add = TRUE)
 
-    message("Rendering ", page, " as in ", baseline, "...")
-    base_html <- render_page(export_commit(baseline, file.path(out_dir, "baseline")), page,
-                             file.path(out_dir, "site_baseline"))
+    if (grepl("\\.html?$", baseline, ignore.case = TRUE) && file.exists(baseline)) {
+      base_html <- normalizePath(baseline, winslash = "/")
+    } else {
+      message("Rendering ", page, " as in ", baseline, "...")
+      base_html <- render_page(export_commit(baseline, file.path(out_dir, "baseline")), page,
+                               file.path(out_dir, "site_baseline"))
+    }
     message("Rendering ", page, " as in the working tree...")
     new_html <- render_page(getwd(), page, file.path(out_dir, "site_working"))
     message("Comparing their HTML...")
