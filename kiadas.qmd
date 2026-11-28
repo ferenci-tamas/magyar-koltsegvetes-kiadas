@@ -132,16 +132,16 @@ Említettem, hogy a [fehér kenyér](https://www.ksh.hu/stadat_files/ara/hu/ara0
 
 Általánosságban véve azonban jobb megoldás az ún. GDP-deflátor (GDP implicit árindex) használata, amely a GDP egész körét figyelembe veszi, így közelebb van a valósághoz. A lenti grafikonnál ennek megfelelően ez az alapértelmezett beállítás; ezen kívül választható még az a deflátor, ami csak az ún. közösségi fogyasztás alapján készült. Sajnos ez utóbbi 2026-ra és 2027-re nem érhető el, mert erre a komponensre nincsen előrejelzett érték a költségvetési tervezetben.
 
-Az alábbi ábra mutatja az egyes területekre költött kiadásokat, de immár átváltott forintban (szép szóval: reálértéken); az átszámítás 2025-ös forintra történt:
+Az alábbi ábra mutatja az egyes területekre költött kiadásokat, de immár átváltott forintban (szép szóval: reálértéken); az átszámítás 2015-ös forintra történt:
 
 ```{r}
 category_chart(
   c("GDP implicit árindex" = "valuedeflGDP",
     "Közösségi fogyasztás implicit árindexe" = "valuedeflP3S13",
     "Fogyasztói árindex" = "valueinfl"),
-  axis_name = c("Kiadás 2025-ös Ft-ban [Mrd Ft]\n(GDP implicit árindex alapján)",
-                "Kiadás 2025-ös Ft-ban [Mrd Ft]\n(közösségi fogyasztás implicit árindexe alapján)",
-                "Kiadás 2025-ös Ft-ban [Mrd Ft]\n(fogyasztói árindex alapján)"),
+  axis_name = c("Kiadás 2015-ös Ft-ban [Mrd Ft]\n(GDP implicit árindex alapján)",
+                "Kiadás 2015-ös Ft-ban [Mrd Ft]\n(közösségi fogyasztás implicit árindexe alapján)",
+                "Kiadás 2015-ös Ft-ban [Mrd Ft]\n(fogyasztói árindex alapján)"),
   unit = "Mrd Ft",
   var_label = "Az összegek évek közti átváltásának alapja:",
   title = "A magyar költségvetés kiadásai reálértékben",

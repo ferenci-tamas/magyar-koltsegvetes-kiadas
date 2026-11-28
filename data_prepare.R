@@ -99,32 +99,22 @@ RawData[, cofogMagyar := NULL]
 
 ################################################################
 
-InflData <- data.table(eurostat::get_eurostat("prc_hicp_aind", filters = list(freq = "A", unit = "RCH_A_AVG", coicop = "CP00", geo = country_groups$EU27), cache = FALSE))
+InflData <- data.table(eurostat::get_eurostat("prc_hicp_aind", filters = list(freq = "A", unit = "INX_A_AVG", coicop = "CP00", geo = country_groups$EU27), cache = FALSE))
 saveRDS(InflData, "InflData.rds")
-InflData <- InflData[freq == "A" & unit == "RCH_A_AVG" & coicop == "CP00" & geo %in% country_groups$EU27 & !is.na(values),
-                     .(geo, year = year(time), inflation = 1 + values / 100)]
-stopifnot(nrow(InflData[, .(unique(diff(year))), .(geo)][V1 != 1]) == 0)
-InflData <- rbind(InflData[, .(year = min(year) - 1, inflation = 1), .(geo)], InflData)
-if(nrow(InflData[geo == "HU" & year == 2026]) == 0) InflData <- rbind(InflData, data.table(geo = "HU", year = 2026, inflation = 1.017))
-if(nrow(InflData[geo == "HU" & year == 2027]) == 0) InflData <- rbind(InflData, data.table(geo = "HU", year = 2027, inflation = 1.030))
+InflData <- InflData[freq == "A" & unit == "INX_A_AVG" & coicop == "CP00" & geo %in% country_groups$EU27 & !is.na(values),
+                     .(geo, year = year(time), inflation = 1 / (values / 100))]
+if(nrow(InflData[geo == "HU" & year == 2026]) == 0) InflData <- rbind(InflData, data.table(geo = "HU", year = 2026, inflation = InflData[geo == "HU" & year == 2025]$inflation/1.017))
+if(nrow(InflData[geo == "HU" & year == 2027]) == 0) InflData <- rbind(InflData, data.table(geo = "HU", year = 2027, inflation = InflData[geo == "HU" & year == 2025]$inflation/1.017/1.030))
 InflData <- InflData[order(geo, year)]
-InflData[, inflation := cumprod(inflation), .(geo)]
-InflData[, inflation := inflation[match(2025, year)] / inflation, .(geo)]
 
 NAMA10Data <- data.table(eurostat::get_eurostat("nama_10_gdp", filters = list(freq = "A", na_item = c("B1GQ", "P3_S13"), geo = country_groups$EU27), cache = FALSE))
 saveRDS(NAMA10Data, "NAMA10Data.rds")
 
-DeflatorData <- dcast(NAMA10Data[freq == "A" & unit == "PD_PCH_PRE_NAC" & na_item %in% c("B1GQ", "P3_S13") & geo %in% country_groups$EU27 & !is.na(values)], freq + unit + geo + time ~ na_item, value.var = "values")
-DeflatorData <- DeflatorData[, .(geo, year = year(time), deflatorGDP = 1 + B1GQ / 100, deflatorP3S13 = 1 + P3_S13/100)]
-stopifnot(nrow(DeflatorData[, .(unique(diff(year))), .(geo)][V1 != 1]) == 0)
-DeflatorData <- rbind(DeflatorData[, .(year = min(year) - 1, deflatorGDP = 1, deflatorP3S13 = 1), .(geo)], DeflatorData)
-if(nrow(DeflatorData[geo == "HU" & year == 2026]) == 0) DeflatorData <- rbind(DeflatorData, data.table(geo = "HU", year = 2026, deflatorGDP = 1.040, deflatorP3S13 = NA))
-if(nrow(DeflatorData[geo == "HU" & year == 2027]) == 0) DeflatorData <- rbind(DeflatorData, data.table(geo = "HU", year = 2027, deflatorGDP = 1.034, deflatorP3S13 = NA))
+DeflatorData <- dcast(NAMA10Data[freq == "A" & unit == "PD15_NAC" & na_item %in% c("B1GQ", "P3_S13") & geo %in% country_groups$EU27 & !is.na(values)], freq + unit + geo + time ~ na_item, value.var = "values")
+DeflatorData <- DeflatorData[, .(geo, year = year(time), deflatorGDP = 1 / (B1GQ / 100), deflatorP3S13 = 1 / (P3_S13 / 100))]
+if(nrow(DeflatorData[geo == "HU" & year == 2026]) == 0) DeflatorData <- rbind(DeflatorData, data.table(geo = "HU", year = 2026, deflatorGDP = DeflatorData[geo == "HU" & year == 2025]$deflatorGDP/1.040, deflatorP3S13 = NA))
+if(nrow(DeflatorData[geo == "HU" & year == 2027]) == 0) DeflatorData <- rbind(DeflatorData, data.table(geo = "HU", year = 2027, deflatorGDP = DeflatorData[geo == "HU" & year == 2025]$deflatorGDP/1.040/1.034, deflatorP3S13 = NA))
 DeflatorData <- DeflatorData[order(geo, year)]
-DeflatorData[, deflatorGDP := cumprod(deflatorGDP), .(geo)]
-DeflatorData[, deflatorP3S13 := cumprod(deflatorP3S13), .(geo)]
-DeflatorData[, deflatorGDP := deflatorGDP[match(2025, year)] / deflatorGDP, .(geo)]
-DeflatorData[, deflatorP3S13 := deflatorP3S13[match(2025, year)] / deflatorP3S13, .(geo)]
 
 GDPData <- NAMA10Data[freq == "A" & unit == "CP_MNAC" & na_item == "B1GQ" & geo %in% country_groups$EU27 & !is.na(values),
                       .(geo, year = year(time), gdp = values)]
