@@ -1026,13 +1026,15 @@ add_chart_layout <- function(chart, title, ids, paths = NULL, relative = FALSE,
       ))
 }
 
-# Renders the chart with the id `id` (a category_chart()) only once it comes within a
-# screen's height of the viewport, or before printing (see kiadas.defer() in
-# js/kiadas.js), so that loading the page only draws the charts in view. Comes
+# Renders the chart with the id `id` only once it comes within a screen's height of
+# the viewport, or before printing, and the data with the ids `needs` (if any) have
+# been loaded from their files (see country_values_dependency()), so that loading the
+# page only draws the charts in view (see kiadas.defer() in js/kiadas.js). Comes
 # after the chart and its download menu, which the chart's code uses
-defer_chart <- function(id) {
+defer_chart <- function(id, needs = NULL) {
+  args <- c(jsonlite::toJSON(id, auto_unbox = TRUE), if (length(needs)) jsonlite::toJSON(needs))
   htmltools::tags$script(htmltools::HTML(
-    sprintf("kiadas.defer(%s);", jsonlite::toJSON(id, auto_unbox = TRUE))
+    sprintf("kiadas.defer(%s);", paste(args, collapse = ", "))
   ))
 }
 
@@ -1040,14 +1042,14 @@ defer_chart <- function(id) {
 # filters and other controls, and whatever they need), then the chart in its box
 # with its download menu, with the id ids$download (see add_download_menu(), which
 # `unit` and `...` go to), and the script that has the chart rendered once it comes
-# near the viewport (see defer_chart()), all with the page's own JavaScript (see
-# kiadas_dependency)
-chart_block <- function(controls, chart, ids, unit, ...) {
+# near the viewport, and the data with the ids `needs` (if any) have been loaded (see
+# defer_chart()), all with the page's own JavaScript (see kiadas_dependency)
+chart_block <- function(controls, chart, ids, unit, needs = NULL, ...) {
   htmltools::attachDependencies(
     htmltools::tagList(
       controls,
       add_download_menu(chart, unit, id = ids$download, ...),
-      defer_chart(ids$chart)
+      defer_chart(ids$chart, needs)
     ),
     kiadas_dependency
   )
@@ -1467,18 +1469,19 @@ country_order <- function(first, countries) {
 }
 
 # The HTML of a chart of the countries (see chart_block()) with the ids `ids` (see
-# country_ids()), of the `data` of country_data(): the element of the values of the
-# countries, unless the page already has it (see country_values_element()), and the
-# `controls` (see country_filters()), which choose the plotted column with radio
-# buttons if `var` has several, then the chart, whose data files start with the name
-# of the y axis, which tells what the values are relative to (as the headers of their
-# columns only name the countries, or the category and the year). `...` go to
-# add_download_menu()
+# country_ids()), of the `data` of country_data(): the `controls` (see
+# country_filters()), which choose the plotted column with radio buttons if `var` has
+# several, then the chart, which is only drawn once the values of the countries have
+# been loaded from their file (see country_values_dependency()), and whose data files
+# start with the name of the y axis, which tells what the values are relative to (as
+# the headers of their columns only name the countries, or the category and the
+# year). `...` go to add_download_menu()
 country_block <- function(controls, chart, ids, data, unit, var, ...) {
-  chart_block(
-    htmltools::tagList(country_values_element(data$values_id, data$values), controls),
-    chart, ids, unit, choice_id = if (length(var) > 1) ids$var, download_axis_name = TRUE,
-    ...
+  htmltools::attachDependencies(
+    chart_block(controls, chart, ids, unit, needs = data$values_id,
+                choice_id = if (length(var) > 1) ids$var, download_axis_name = TRUE, ...),
+    country_values_dependency(data$values_id, data$values),
+    append = TRUE
   )
 }
 
@@ -1576,8 +1579,8 @@ country_chart <- function(var, axis_name, unit, title = NULL, var_label = NULL,
 # including the groups of countries (see country_names and group_names), whose names
 # are also in `groups`; and their `values`, for each category (by label) and column,
 # in each year with data for any country (by year), in the order of `countries`, NA
-# where a country has none, which the page has in the element with the id
-# `values_id` (see country_values_element()). The charts draw from these in the
+# where a country has none, which the page loads from a file of their own, under the
+# id `values_id` (see country_values_dependency()). The charts draw from these in the
 # browser, as echarts4r would embed every row of the data in the page, with the
 # names of the columns, which would make it several megabytes larger. For the same
 # reason, the values are rounded to 4 significant digits, which is still more than
@@ -1608,12 +1611,31 @@ country_data <- function(columns) {
        values_id = paste0("country_values_", paste(sort(columns), collapse = "_")))
 }
 
-# The element of the `values` of country_data(), with the id `id` (see
-# json_element()): as each copy would add about a megabyte to the page, it only has
-# one, which the charts of the same columns share, wherever it is on the page, as
-# the charts are only drawn once the page has been read (see defer_chart())
-country_values_element <- function(id, values) {
-  json_element(id, jsonlite::toJSON(values, na = "null", digits = 16, use_signif = TRUE))
+# The `values` of country_data(), as a file of their own, as they would make the page
+# about 1.5 MB larger, while only the charts at its end need them: the page loads them
+# once it has loaded, as soon as the browser is idle, or as soon as a chart needs them,
+# if that's earlier (see kiadas.defer() in js/kiadas.js). A dependency (see
+# htmltools::htmlDependency()) whose attachment is the file: Quarto copies it beside
+# the page's other libraries, and the page links to it in its head, without loading
+# it. The file is a script, which registers the values under the id `id` (see
+# kiadas.provide()), as browsers refuse to fetch a file for a page opened from the
+# disk, but load scripts, in ASCII, so that it's read the same whatever encoding the
+# browser takes it to be in. The charts of the same columns share it, as a page has a
+# single dependency of each name. Its version, and so its folder, comes from the
+# values, so that a browser never takes the values of a new page from its cache of
+# earlier ones (Quarto removes the folders of the earlier versions)
+country_values_dependency <- function(id, values) {
+  json <- as.character(jsonlite::toJSON(values, na = "null", digits = 16, use_signif = TRUE))
+  dir <- file.path(tempdir(), id)
+  dir.create(dir, showWarnings = FALSE)
+  # As a string, which JSON.parse() reads faster than a script reads the same as a
+  # literal
+  writeLines(sprintf('kiadas.provide("%s", JSON.parse("%s"));', id,
+                     stringi::stri_escape_unicode(json)),
+             file.path(dir, "values.js"))
+  hash <- digest::digest(json, algo = "xxhash64", serialize = FALSE)
+  htmltools::htmlDependency(id, paste0("1.0.", strtoi(substr(hash, 1, 7), 16L)),
+                            src = dir, attachment = c(data = "values.js"), all_files = TRUE)
 }
 
 # The controls of a country_chart() (see there), with the ids `ids` (see there),

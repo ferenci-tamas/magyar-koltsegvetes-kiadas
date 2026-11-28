@@ -5,27 +5,103 @@
 // order, so that they're all there before the charts are rendered, and before the
 // scripts of the filters run)
 window.kiadas = (function() {
-  // Renders the charts `els` that defer() held back: htmlwidgets renders each widget
-  // of echarts4r's class that it hasn't yet. While the page is still being read,
-  // it does so once it's read (on DOMContentLoaded), as it would otherwise also
-  // render the widgets read since that defer() hasn't held back yet, and run the
-  // code of the charts before the elements it uses are read
+  // The data that the charts held back by defer() need from files of their own, by
+  // the charts' elements; the ids of all those data; the promises of the data being
+  // loaded (see load()), and the data loaded (see provide()), by their ids
+  var needs = new Map(), wanted = {}, loading = {}, provided = {};
+
+  // Renders the charts `els` that defer() held back, unless they have been since:
+  // htmlwidgets renders each widget of echarts4r's class that it hasn't yet. While
+  // the page is still being read, it does so once it's read (on DOMContentLoaded),
+  // as it would otherwise also render the widgets read since that defer() hasn't held
+  // back yet, and run the code of the charts before the elements it uses are read
   function render(els) {
+    els = els.filter(function(el) { return el.classList.contains('kiadas-deferred'); });
     if (!els.length) return;
     els.forEach(function(el) {
-      observer.unobserve(el);
+      if (observer) observer.unobserve(el);
+      var shown = el.querySelector('.kiadas-note');
+      if (shown) shown.remove();
       el.classList.replace('kiadas-deferred', 'echarts4r');
     });
     if (document.readyState !== 'loading') HTMLWidgets.staticRender();
   }
+
+  // Writes `text` in the place of the chart `el`, until it's rendered
+  function note(el, text) {
+    var p = el.querySelector('.kiadas-note');
+    if (!p) {
+      p = document.createElement('p');
+      p.className = 'kiadas-note text-body-secondary text-center pt-5';
+      el.appendChild(p);
+    }
+    p.textContent = text;
+  }
+
+  // Renders the charts `els` that defer() held back: those whose data are there at
+  // once, and the others once their data have arrived, saying so in their place
+  // meanwhile (or that their data couldn't be loaded)
+  function request(els) {
+    var ready = [];
+    els.forEach(function(el) {
+      if (observer) observer.unobserve(el);
+      var missing = (needs.get(el) || []).filter(function(id) { return !(id in provided); });
+      if (!missing.length) {
+        ready.push(el);
+        return;
+      }
+      note(el, 'Az adatok betöltése…');
+      Promise.all(missing.map(load)).then(function() { render([el]); }, function() {
+        note(el, 'Az ábra adatait nem sikerült betölteni.');
+      });
+    });
+    render(ready);
+  }
+
+  // Loads the data with the id `id` from their file, which Quarto has copied beside
+  // the page's other libraries, and the page links to in its head (see
+  // country_values_dependency() in charts.R): a script, which registers them with
+  // provide(), as browsers refuse to fetch a file for a page opened from the disk,
+  // but load scripts. Once, however often it's called: a promise of their arrival,
+  // which if they can't be loaded, the next call makes anew
+  function load(id) {
+    if (!loading[id]) {
+      loading[id] = new Promise(function(resolve, reject) {
+        var script = document.createElement('script');
+        script.onload = function() {
+          if (id in provided) resolve();
+          else reject(new Error('The file of the data ' + id + ' has none'));
+        };
+        script.onerror = function() {
+          reject(new Error("The file of the data " + id + " couldn't be loaded"));
+        };
+        script.src = document.getElementById(id + '-data-attachment').href;
+        document.head.appendChild(script);
+      });
+      loading[id].catch(function() { delete loading[id]; });
+    }
+    return loading[id];
+  }
+
   // Each when it comes within a screen's height of the viewport
   var observer = window.IntersectionObserver && new IntersectionObserver(function(entries) {
-    render(entries.filter(function(e) { return e.isIntersecting; })
+    request(entries.filter(function(e) { return e.isIntersecting; })
       .map(function(e) { return e.target; }));
   }, { rootMargin: '100% 0px' });
   // And all that are left before printing, as they'd be missing from the printout
+  // (but for those whose data are still loading, which it can't wait for)
   window.addEventListener('beforeprint', function() {
-    render(Array.from(document.querySelectorAll('.kiadas-deferred')));
+    request(Array.from(document.querySelectorAll('.kiadas-deferred')));
+  });
+  // The data that the charts held back need are loaded once the page has loaded, as
+  // soon as the browser is idle, so that they're there by the time those charts come
+  // near or the page is printed, without delaying the page itself
+  window.addEventListener('load', function() {
+    function start() {
+      Object.keys(wanted).forEach(function(id) { load(id).catch(function() {}); });
+    }
+    if (window.requestIdleCallback) requestIdleCallback(start, { timeout: 5000 });
+    else setTimeout(start, 1000);
   });
   // The data read so far from the elements of JSON of the page, by their ids (see
   // json() below)
@@ -36,14 +112,22 @@ window.kiadas = (function() {
 
   return {
     // Renders the chart with the id `id` only once it comes within a screen's height
-    // of the viewport (or before printing). Until then htmlwidgets skips it, as this
-    // takes the class of echarts4r's widgets from it, before htmlwidgets renders the
-    // widgets of the page
-    defer: function(id) {
-      if (!observer) return;
+    // of the viewport (or before printing), and the data with the ids `data` (if
+    // any) have been loaded from their files (see load()). Until then htmlwidgets
+    // skips it, as this takes the class of echarts4r's widgets from it, before
+    // htmlwidgets renders the widgets of the page. (Where the browser can't tell when
+    // it comes near, it's rendered as soon as its data are there)
+    defer: function(id, data) {
       var el = document.getElementById(id);
       el.classList.replace('echarts4r', 'kiadas-deferred');
-      observer.observe(el);
+      needs.set(el, data || []);
+      (data || []).forEach(function(d) { wanted[d] = true; });
+      if (observer) observer.observe(el); else request([el]);
+    },
+    // Registers the data with the id `id`, `data`, as their file does as it's loaded
+    // (see load())
+    provide: function(id, data) {
+      provided[id] = data;
     },
     // Tells the parts of the chart `el` what its controls leave of its data: `view`,
     // with the rows of each of its groups (each slot of a part, type of data or
@@ -84,10 +168,12 @@ window.kiadas = (function() {
     negativeSymbolSize: function(value, params) {
       return value[params.dimensionNames[params.encode.y[0]]] < 0 ? 4 : 0;
     },
-    // The data in the element of JSON with the id `id` (see json_element() in
-    // charts.R), which several charts or filters may share: parsed when first
-    // needed, and then kept for the others
+    // The data with the id `id`: those loaded from their file (see load()), or else
+    // those in the element of JSON with that id (see json_element() in charts.R),
+    // which several charts or filters may share, parsed when first needed, and then
+    // kept for the others
     json: function(id) {
+      if (id in provided) return provided[id];
       parsed[id] = parsed[id] || JSON.parse(document.getElementById(id).textContent);
       return parsed[id];
     },
